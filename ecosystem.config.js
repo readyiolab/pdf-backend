@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: "pdf-saas-api",
-      script: "dist/index.js",
+      script: "dist/api/src/index.js",
       cwd: "/var/www/pdf/pdf-backend/api",
       env: {
         NODE_ENV: "production",
@@ -10,7 +10,7 @@ module.exports = {
     },
     {
       name: "pdf-saas-worker",
-      script: "dist/index.js",
+      script: "dist/worker/src/index.js",
       cwd: "/var/www/pdf/pdf-backend/worker",
       env: {
         NODE_ENV: "production",

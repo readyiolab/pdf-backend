@@ -5,7 +5,7 @@ import { ToolName, JobPayload } from '@shared/types';
 import { logger } from './logger';
 
 export const heavyQueue = new Queue<JobPayload>(HEAVY_JOBS_QUEUE, {
-  connection: redis,
+  connection: redis as any,
   defaultJobOptions: {
     attempts: 3,
     backoff: {
@@ -18,7 +18,7 @@ export const heavyQueue = new Queue<JobPayload>(HEAVY_JOBS_QUEUE, {
 });
 
 export const lightQueue = new Queue<JobPayload>(LIGHT_JOBS_QUEUE, {
-  connection: redis,
+  connection: redis as any,
   defaultJobOptions: {
     attempts: 2,
     backoff: {
@@ -51,7 +51,7 @@ export async function pushToQueue(
 
   logger.info({ jobId, tool, queueName }, 'Pushing job to BullMQ');
 
-  await queue.add(tool, payload, {
+  await queue.add(tool as any, payload, {
     jobId, // Use the DB's jobId as the BullMQ jobId to prevent duplicate processing
   });
 }

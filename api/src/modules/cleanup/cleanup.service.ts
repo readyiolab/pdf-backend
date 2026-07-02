@@ -54,7 +54,7 @@ export const cleanupService = {
         try {
           await s3.send(
             new DeleteObjectsCommand({
-              Bucket: env.S3_BUCKET_NAME,
+              Bucket: env.DO_SPACES_BUCKET,
               Delete: {
                 Objects: chunk,
                 Quiet: true,

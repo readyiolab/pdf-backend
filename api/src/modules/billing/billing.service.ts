@@ -1,6 +1,7 @@
 import { getPool } from '../../lib/mysql';
 import { razorpay } from '../../lib/razorpay';
 import { AppError } from '../../middleware/errorHandler.middleware';
+import { env } from '../../config/env';
 import { CheckoutInput } from './billing.types';
 import crypto from 'crypto';
 
@@ -44,7 +45,7 @@ export const billingService = {
       return {
         subscriptionId: subscription.id,
         status: subscription.status,
-        razorpayKey: razorpay.key_id,
+        razorpayKey: env.RAZORPAY_KEY_ID || '',
       };
     } catch (err: any) {
       throw new AppError(`Razorpay subscription creation failed: ${err.message}`, 500);
