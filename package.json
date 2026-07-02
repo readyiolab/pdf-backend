@@ -9,7 +9,10 @@
   "scripts": {
     "dev:api": "npm --workspace=api run dev",
     "dev:worker": "npm --workspace=worker run dev",
-    "dev": "concurrently \"npm run dev:api\" \"npm run dev:worker\""
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:worker\"",
+    "build:api": "npm --workspace=api run build",
+    "build:worker": "npm --workspace=worker run build",
+    "build": "npm run build:api && npm run build:worker"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
