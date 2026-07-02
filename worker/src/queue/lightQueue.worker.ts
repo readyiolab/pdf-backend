@@ -6,7 +6,7 @@ import { logger } from '../lib/logger';
 
 export const startLightWorker = () => {
   const worker = new Worker(LIGHT_JOBS_QUEUE, jobRouter, {
-    connection: redis,
+    connection: redis as any,
     concurrency: 10, // Process up to 10 lightweight tasks concurrently
   });
 
