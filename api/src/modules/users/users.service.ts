@@ -1,5 +1,5 @@
 import { getPool } from '../../lib/mysql';
-import { PLAN_LIMITS } from '@shared/constants';
+import { PLAN_LIMITS } from '../../../../shared/constants';
 import { AppError } from '../../middleware/errorHandler.middleware';
 
 export const usersService = {

@@ -1,7 +1,7 @@
 import { Queue } from 'bullmq';
 import { redis } from './redis';
-import { HEAVY_JOBS_QUEUE, LIGHT_JOBS_QUEUE, HEAVY_TOOLS } from '@shared/constants';
-import { ToolName, JobPayload } from '@shared/types';
+import { HEAVY_JOBS_QUEUE, LIGHT_JOBS_QUEUE, HEAVY_TOOLS } from '../../../shared/constants';
+import { ToolName, JobPayload } from '../../../shared/types';
 import { logger } from './logger';
 
 export const heavyQueue = new Queue<JobPayload>(HEAVY_JOBS_QUEUE, {

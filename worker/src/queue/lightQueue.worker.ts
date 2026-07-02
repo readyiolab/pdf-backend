@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq';
 import { redis } from '../lib/redis';
-import { LIGHT_JOBS_QUEUE } from '@shared/constants';
+import { LIGHT_JOBS_QUEUE } from '../../../shared/constants';
 import { jobRouter } from './jobRouter';
 import { logger } from '../lib/logger';
 

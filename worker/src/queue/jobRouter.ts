@@ -1,5 +1,5 @@
 import { Job } from 'bullmq';
-import { JobPayload } from '@shared/types';
+import { JobPayload } from '../../../shared/types';
 import { logger } from '../lib/logger';
 import { getPool } from '../lib/mysql';
 

@@ -3,7 +3,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'crypto';
 import { s3 } from '../../lib/s3';
 import { env } from '../../config/env';
-import { PLAN_LIMITS } from '@shared/constants';
+import { PLAN_LIMITS } from '../../../../shared/constants';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { PresignUploadInput, PresignResponse } from './upload.types';
 

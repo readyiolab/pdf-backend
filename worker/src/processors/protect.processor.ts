@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { executeBinary } from '../lib/exec';
 import { logger } from '../lib/logger';
-import { ProtectOptions } from '@shared/types';
+import { ProtectOptions } from '../../../shared/types';
 
 export async function protectProcessor(
   jobId: string,

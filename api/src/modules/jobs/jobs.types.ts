@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SUPPORTED_TOOLS } from '@shared/constants';
+import { SUPPORTED_TOOLS } from '../../../../shared/constants';
 
 export const createJobSchema = z.object({
   body: z.object({

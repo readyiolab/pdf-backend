@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
-import { MergeOptions } from '@shared/types';
+import { MergeOptions } from '../../../shared/types';
 
 export async function mergeProcessor(
   jobId: string,

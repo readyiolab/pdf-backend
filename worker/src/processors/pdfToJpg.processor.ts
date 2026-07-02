@@ -5,7 +5,7 @@ import archiver from 'archiver';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { executeBinary } from '../lib/exec';
 import { logger } from '../lib/logger';
-import { PdfToJpgOptions } from '@shared/types';
+import { PdfToJpgOptions } from '../../../shared/types';
 
 export async function pdfToJpgProcessor(
   jobId: string,

@@ -1,9 +1,9 @@
 import { getPool } from '../../lib/mysql';
 import { pushToQueue } from '../../lib/queue';
-import { PLAN_LIMITS } from '@shared/constants';
+import { PLAN_LIMITS } from '../../../../shared/constants';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { CreateJobInput } from './jobs.types';
-import { ToolName } from '@shared/types';
+import { ToolName } from '../../../../shared/types';
 import crypto from 'crypto';
 
 export const jobsService = {

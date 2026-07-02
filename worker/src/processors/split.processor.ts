@@ -4,8 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { logger } from '../lib/logger';
-import { SplitOptions } from '@shared/types';
-import { AppError } from '../../../api/src/middleware/errorHandler.middleware'; // Reuse AppError structure or standard Error
+import { SplitOptions } from '../../../shared/types';
 
 function parseRanges(ranges: string[], maxPages: number): number[] {
   const indices = new Set<number>();

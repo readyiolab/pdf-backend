@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { executeBinary } from '../lib/exec';
 import { logger } from '../lib/logger';
-import { OcrOptions } from '@shared/types';
+import { OcrOptions } from '../../../shared/types';
 
 export async function ocrProcessor(
   jobId: string,

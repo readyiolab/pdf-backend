@@ -4,7 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { logger } from '../lib/logger';
-import { RotateOptions } from '@shared/types';
+import { RotateOptions } from '../../../shared/types';
 
 export async function rotateProcessor(
   jobId: string,
