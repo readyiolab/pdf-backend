@@ -1,0 +1,1256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF SaaS — Interactive Testing Console</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080c14;
+      --bg-card: #0f172a;
+      --bg-card-hover: #1e293b;
+      --border-color: #334155;
+      --color-primary: #3b82f6;
+      --color-primary-glow: rgba(59, 130, 246, 0.35);
+      --color-success: #10b981;
+      --color-success-glow: rgba(16, 185, 129, 0.35);
+      --color-danger: #ef4444;
+      --color-text-main: #f8fafc;
+      --color-text-muted: #94a3b8;
+      --color-input: #1e293b;
+      --color-console: #030712;
+      --color-yellow: #eab308;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--color-text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* Premium Header */
+    header {
+      background: linear-gradient(135deg, #1e1b4b 0%, #080c14 100%);
+      border-bottom: 1px solid var(--border-color);
+      padding: 1.25rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-badge {
+      background: linear-gradient(135deg, var(--color-primary) 0%, #8b5cf6 100%);
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.3rem;
+      color: #fff;
+      box-shadow: 0 0 20px var(--color-primary-glow);
+    }
+
+    .logo-text h1 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .logo-text p {
+      font-size: 0.75rem;
+      color: var(--color-text-muted);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .token-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background-color: rgba(30, 41, 59, 0.8);
+      padding: 0.5rem 1rem;
+      border-radius: 20px;
+      border: 1px solid var(--border-color);
+      font-size: 0.875rem;
+    }
+
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: var(--color-danger);
+      box-shadow: 0 0 8px var(--color-danger);
+      transition: all 0.3s ease;
+    }
+
+    .status-indicator.active {
+      background-color: var(--color-success);
+      box-shadow: 0 0 8px var(--color-success);
+    }
+
+    /* Layout structure */
+    .app-layout {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 83px);
+    }
+
+    /* Form Panel */
+    .form-panel {
+      flex: 1.1;
+      padding: 2rem;
+      overflow-y: auto;
+      background-color: var(--bg-dark);
+      border-right: 1px solid var(--border-color);
+    }
+
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 1.5rem;
+      color: var(--color-text-main);
+      letter-spacing: -0.5px;
+    }
+
+    /* Card Panels */
+    .card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+
+    .card-title {
+      font-weight: 700;
+      font-size: 1.1rem;
+      margin-bottom: 1.25rem;
+      color: var(--color-text-main);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .step-number {
+      background-color: var(--color-primary);
+      color: white;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-right: 0.5rem;
+    }
+
+    /* Inputs, Labels & Form Groups */
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--color-text-muted);
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      background-color: var(--color-input);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      color: var(--color-text-main);
+      font-size: 0.95rem;
+      transition: all 0.2s ease;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 2px var(--color-primary-glow);
+    }
+
+    /* Buttons */
+    .btn {
+      background: linear-gradient(135deg, var(--color-primary) 0%, #2563eb 100%);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 0.75rem 1.5rem;
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+    }
+
+    .btn:hover {
+      filter: brightness(1.1);
+      box-shadow: 0 4px 15px rgba(37, 99, 235, 0.35);
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--color-text-main);
+      box-shadow: none;
+    }
+
+    .btn-secondary:hover {
+      background-color: rgba(255, 255, 255, 0.05);
+      border-color: var(--color-text-muted);
+    }
+
+    .selected-files-list {
+      margin-top: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .selected-file-item {
+      background-color: rgba(255, 255, 255, 0.04);
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      border: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* E2E Progress Box */
+    .execution-progress-box {
+      background-color: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-top: 1.5rem;
+      display: none;
+    }
+
+    .progress-step {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.9rem;
+      margin-bottom: 0.75rem;
+      color: var(--color-text-muted);
+    }
+
+    .progress-step.completed {
+      color: var(--color-success);
+    }
+
+    .progress-step.active {
+      color: var(--color-primary);
+      font-weight: 600;
+    }
+
+    .progress-step-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid currentColor;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+    }
+
+    /* Console Panel styling */
+    .console-panel {
+      flex: 1;
+      background-color: var(--color-console);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .console-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .console-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--color-text-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .console-logs {
+      flex: 1;
+      padding: 1.5rem;
+      overflow-y: auto;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.825rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .log-entry {
+      border-left: 3px solid var(--color-primary);
+      padding-left: 1rem;
+      animation: slideIn 0.2s ease-out;
+    }
+
+    .log-entry.success { border-left-color: var(--color-success); }
+    .log-entry.error { border-left-color: var(--color-danger); }
+    .log-entry.warn { border-left-color: var(--color-yellow); }
+
+    .log-meta {
+      font-size: 0.75rem;
+      color: var(--color-text-muted);
+      margin-bottom: 0.5rem;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .log-body {
+      background-color: rgba(255, 255, 255, 0.02);
+      padding: 0.75rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      max-height: 400px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    /* Result banner */
+    .success-result-card {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(16, 185, 129, 0.03) 100%);
+      border: 1px solid var(--color-success);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-top: 1.5rem;
+      display: none;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    .success-result-title {
+      font-weight: 700;
+      color: var(--color-success);
+      font-size: 1.1rem;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Progress bar */
+    .progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background-color: var(--color-input);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 0.5rem;
+      display: none;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-success) 100%);
+      transition: width 0.1s ease;
+    }
+
+    /* Accordion Tabs for Auth */
+    .auth-tab-buttons {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .auth-tab-btn {
+      flex: 1;
+      padding: 0.5rem;
+      background-color: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+
+    .auth-tab-btn.active {
+      background-color: var(--color-primary);
+      color: white;
+      border-color: var(--color-primary);
+    }
+
+    .auth-tab-content {
+      display: none;
+    }
+
+    .auth-tab-content.active {
+      display: block;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes slideIn {
+      from { transform: translateY(10px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- CORS Warning Banner -->
+  <div id="fileProtocolWarning" style="display:none; background-color: var(--color-danger); color: white; padding: 0.75rem 2rem; font-weight: 700; text-align: center; font-size: 0.9rem; border-bottom: 1px solid var(--border-color);">
+    ⚠️ WARNING: You are running this page from file://. Direct uploads to DigitalOcean Spaces will fail due to CORS security policies. Please use <a href="http://localhost:5000/test" style="color: white; text-decoration: underline;">http://localhost:5000/test</a> instead.
+  </div>
+
+  <!-- Header -->
+  <header>
+    <div class="logo-container">
+      <div class="logo-badge">PDF</div>
+      <div class="logo-text">
+        <h1>PDF SaaS E2E Testing Suite</h1>
+        <p>1-Click Upload & Processing Toolkit</p>
+      </div>
+    </div>
+    
+    <div class="header-actions">
+      <button class="btn" style="background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%); padding: 0.5rem 1rem; font-size: 0.85rem; width: auto; box-shadow: none;" onclick="autoGenerateGuestSession()">
+        ⚡ Auto Guest Session
+      </button>
+      <div class="token-status">
+        <div id="statusIndicator" class="status-indicator"></div>
+        <span id="statusLabel">Awaiting Account Creation</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <div class="app-layout">
+    
+    <!-- Unified Operations Form Panel -->
+    <div class="form-panel">
+      
+      <!-- ================= REGISTER & LOGIN CARD (NEW!) ================= -->
+      <div class="card">
+        <div class="card-title">
+          <span>🔑 User Authentication Session</span>
+          <span style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: normal;">Sign up, Sign in, or check profile limits</span>
+        </div>
+
+        <div class="auth-tab-buttons">
+          <button id="tabRegisterBtn" class="auth-tab-btn active" onclick="switchAuthTab('register')">Register Account</button>
+          <button id="tabLoginBtn" class="auth-tab-btn" onclick="switchAuthTab('login')">Login / Sign In</button>
+          <button id="tabProfileBtn" class="auth-tab-btn" onclick="switchAuthTab('profile')">My Profile Limits</button>
+        </div>
+
+        <!-- Register Tab Content -->
+        <div id="tabRegisterContent" class="auth-tab-content active">
+          <form onsubmit="handleAuthSubmit(event, '/api/auth/register')">
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+              <label>Full Name</label>
+              <input type="text" name="name" value="Alok Kumar" required style="padding: 0.5rem 0.75rem; font-size: 0.85rem;">
+            </div>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+              <label>Email Address</label>
+              <input type="email" name="email" value="alok@example.com" required style="padding: 0.5rem 0.75rem; font-size: 0.85rem;">
+            </div>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+              <label>Password</label>
+              <input type="password" name="password" value="AlokPassword123" required style="padding: 0.5rem 0.75rem; font-size: 0.85rem;">
+            </div>
+            <button class="btn" type="submit" style="padding: 0.5rem 1rem; font-size: 0.85rem;">Create Account & Log In</button>
+          </form>
+        </div>
+
+        <!-- Login Tab Content -->
+        <div id="tabLoginContent" class="auth-tab-content">
+          <form onsubmit="handleAuthSubmit(event, '/api/auth/login')">
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+              <label>Email Address</label>
+              <input type="email" name="email" value="alok@example.com" required style="padding: 0.5rem 0.75rem; font-size: 0.85rem;">
+            </div>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+              <label>Password</label>
+              <input type="password" name="password" value="AlokPassword123" required style="padding: 0.5rem 0.75rem; font-size: 0.85rem;">
+            </div>
+            <button class="btn" type="submit" style="padding: 0.5rem 1rem; font-size: 0.85rem;">Sign In</button>
+          </form>
+        </div>
+
+        <!-- Profile Tab Content -->
+        <div id="tabProfileContent" class="auth-tab-content">
+          <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-bottom: 1rem;">
+            Queries your current daily operation counts and pricing tier parameters.
+          </p>
+          <button class="btn btn-secondary" onclick="fetchAuthenticated('/api/users/me', 'GET')" style="padding: 0.5rem 1rem; font-size: 0.85rem;">
+            Refresh Profile Limits
+          </button>
+        </div>
+
+      </div>
+
+      <h2>One-Click PDF Processing Flow</h2>
+      
+      <!-- Unified Operations Card -->
+      <div class="card">
+        
+        <!-- Step 1: Select Tool -->
+        <div class="form-group">
+          <label><span class="step-number">1</span>Choose PDF Tool</label>
+          <select id="selectedTool" onchange="handleToolChange(this.value)">
+            <option value="split">Split PDF (Extract page ranges)</option>
+            <option value="merge">Merge PDFs (Combines multiple files)</option>
+            <option value="compress">Compress PDF (Reduce file size)</option>
+            <option value="rotate">Rotate PDF (Rotate page angles)</option>
+            <option value="protect">Protect PDF (Set user/owner passwords)</option>
+            <option value="jpgToPdf">JPG/PNG to PDF (Convert images)</option>
+            <option value="pdfToJpg">PDF to JPG (Extract pages as ZIP/Images)</option>
+            <option value="watermark">Watermark PDF (Apply watermark text)</option>
+            <option value="officeConvert">Office to PDF (Convert Docx/Pptx/Xlsx)</option>
+            <option value="ocr">OCR PDF (Searchable PDF scanner)</option>
+          </select>
+        </div>
+
+        <!-- Step 2: Upload Files -->
+        <div class="form-group">
+          <label id="uploadLabel"><span class="step-number">2</span>Select File(s)</label>
+          <input type="file" id="fileInputEl" accept=".pdf,image/jpeg,image/png,.docx,.pptx,.xlsx" onchange="handleFileChange(this)" style="background-color: var(--color-input); border: 1px solid var(--border-color); border-radius: 10px; padding: 0.75rem 1rem; color: var(--color-text-main); font-size: 0.95rem; cursor: pointer; display: block; margin-top: 0.5rem;">
+          <div class="selected-files-list" id="selectedFilesList"></div>
+          
+          <div id="uploadProgressContainer" class="progress-bar-container">
+            <div id="uploadProgressBar" class="progress-bar-fill"></div>
+          </div>
+        </div>
+
+        <!-- Step 3: Tool Specific Configuration Options -->
+        <div class="form-group" style="margin-top: 1.5rem;">
+          <label><span class="step-number">3</span>Configure Tool Settings</label>
+          <div id="toolOptionsContainer" style="background-color: rgba(255,255,255,0.01); border: 1px solid var(--border-color); padding: 1.25rem; border-radius: 10px;">
+            <!-- Filled dynamically -->
+          </div>
+        </div>
+
+        <!-- Step 4: Execute Process -->
+        <button class="btn" id="executeBtn" style="margin-top: 1.5rem; height: 50px; font-size: 1.05rem;" onclick="runUnifiedExecutionFlow()">
+          🚀 Upload & Process Files
+        </button>
+
+      </div>
+
+      <!-- Execution Progress Steps Indicator -->
+      <div id="executionProgressBox" class="execution-progress-box">
+        <div class="card-title" style="margin-bottom: 0.75rem; font-size: 0.95rem;">Workflow Progression Tracker</div>
+        <div id="stepUpload" class="progress-step">
+          <div class="progress-step-icon">1</div>
+          <span id="stepUploadText">Uploading files to DigitalOcean Space...</span>
+        </div>
+        <div id="stepQueue" class="progress-step">
+          <div class="progress-step-icon">2</div>
+          <span>Dispatching job request to BullMQ...</span>
+        </div>
+        <div id="stepPoll" class="progress-step">
+          <div class="progress-step-icon">3</div>
+          <span id="stepPollText">Processing job on background worker queue...</span>
+        </div>
+      </div>
+
+      <!-- Success Download result banner -->
+      <div id="successResultCard" class="success-result-card">
+        <div class="success-result-title">
+          <span>✓</span> Job Completed Successfully!
+        </div>
+        <p style="font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 1rem;">
+          Your result file has been successfully uploaded back into your DigitalOcean Space. You can view or download it directly:
+        </p>
+        <div class="form-group">
+          <label>Result Space Object Key</label>
+          <input type="text" id="resultKeyOutput" readonly style="font-family: 'Fira Code', monospace; font-size: 0.8rem;">
+        </div>
+        <button class="btn" style="background: linear-gradient(135deg, var(--color-success) 0%, #059669 100%); margin-top: 0.5rem;" onclick="openOutputLink()">
+          🌐 Open / Download Result File
+        </button>
+      </div>
+
+      <!-- Simulated Webhook Activation Panel (Collapsible) -->
+      <div class="card" style="margin-top: 2rem;">
+        <div class="card-title" style="font-size: 0.95rem; margin-bottom: 0.50rem;">
+          <span>👑 Simulated Account Upgrader</span>
+        </div>
+        <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-bottom: 1rem;">
+          Dispatches a simulated Razorpay webhook payment confirmation to immediately grant this user account **`PRO`** plan privileges.
+        </p>
+        <button class="btn btn-secondary" onclick="simulateUpgradeToPro()">Simulate PRO Tier Upgrade</button>
+      </div>
+
+    </div>
+
+    <!-- Right Console logs Panel -->
+    <div class="console-panel">
+      <div class="console-header">
+        <div class="console-title">
+          <span>⚙️</span> Response Logs Console
+        </div>
+        <button class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; width: auto;" onclick="clearLogsConsole()">
+          Clear Logs
+        </button>
+      </div>
+      
+      <div class="console-logs" id="consoleLogsArea">
+        <div class="log-entry">
+          <div class="log-meta">
+            <span>Admin Console</span>
+            <span>Online</span>
+          </div>
+          <div class="log-body">Ready! Select a tool and choose files above to test. Use the "Auto Guest Session" button at the top to bypass register forms.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const API_URL = 'http://localhost:5000';
+    let jwtToken = localStorage.getItem('saas_jwt_token') || '';
+    let selectedFiles = [];
+    let uploadedFileKeys = [];
+    let lastCompletedOutputUrl = '';
+
+    // Initialize View states
+    updateStatusBadgeUI();
+    handleToolChange('split');
+
+    // Switch manual Auth tabs
+    function switchAuthTab(tab) {
+      document.querySelectorAll('.auth-tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.auth-tab-content').forEach(content => content.classList.remove('active'));
+
+      if (tab === 'register') {
+        document.getElementById('tabRegisterBtn').classList.add('active');
+        document.getElementById('tabRegisterContent').classList.add('active');
+      } else if (tab === 'login') {
+        document.getElementById('tabLoginBtn').classList.add('active');
+        document.getElementById('tabLoginContent').classList.add('active');
+      } else if (tab === 'profile') {
+        document.getElementById('tabProfileBtn').classList.add('active');
+        document.getElementById('tabProfileContent').classList.add('active');
+      }
+    }
+
+    // Generate quick mock account
+    async function autoGenerateGuestSession() {
+      const random = Math.floor(Math.random() * 100000);
+      const email = `guest_${random}@example.com`;
+      const password = `Password${random}`;
+      const name = `Guest Dev #${random}`;
+
+      logResponse('Generating Auto Guest Session...', { email, name });
+
+      try {
+        const response = await fetch(`${API_URL}/api/auth/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password, name })
+        });
+
+        const data = await response.json();
+        if (response.ok && data.token) {
+          jwtToken = data.token;
+          localStorage.setItem('saas_jwt_token', jwtToken);
+          updateStatusBadgeUI();
+          logResponse('Auto Guest registration completed!', data, 'success');
+        } else {
+          logResponse('Auto Guest registration failed', data, 'error');
+        }
+      } catch (err) {
+        logResponse('Connection failed to API server', err.message, 'error');
+      }
+    }
+
+    // Refresh Badge status
+    function updateStatusBadgeUI() {
+      const statusIndicator = document.getElementById('statusIndicator');
+      const statusLabel = document.getElementById('statusLabel');
+
+      if (jwtToken) {
+        statusIndicator.classList.add('active');
+        try {
+          const payload = JSON.parse(atob(jwtToken.split('.')[1]));
+          statusLabel.textContent = `Active Guest Token: ${payload.email} (${payload.plan || 'FREE'})`;
+        } catch (e) {
+          statusLabel.textContent = 'Token Loaded';
+        }
+      } else {
+        statusIndicator.classList.remove('active');
+        statusLabel.textContent = 'Awaiting Account';
+      }
+    }
+
+    // Console logs logger
+    function logResponse(title, payload, type = 'info') {
+      const logsArea = document.getElementById('consoleLogsArea');
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+
+      const timestamp = new Date().toLocaleTimeString();
+      const stringified = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+
+      entry.innerHTML = `
+        <div class="log-meta">
+          <span>${title}</span>
+          <span>${timestamp}</span>
+        </div>
+        <div class="log-body">${escapeHTML(stringified)}</div>
+      `;
+
+      logsArea.appendChild(entry);
+      logsArea.scrollTop = logsArea.scrollHeight;
+    }
+
+    // Auth request submission
+    async function handleAuthSubmit(event, endpoint) {
+      event.preventDefault();
+      const formData = new FormData(event.target);
+      const payload = Object.fromEntries(formData.entries());
+
+      logResponse(`POST ${endpoint} Request`, payload);
+
+      try {
+        const response = await fetch(`${API_URL}${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        
+        if (response.ok) {
+          logResponse(`POST ${endpoint} Success`, data, 'success');
+          if (data.token) {
+            jwtToken = data.token;
+            localStorage.setItem('saas_jwt_token', jwtToken);
+            updateStatusBadgeUI();
+          }
+        } else {
+          logResponse(`POST ${endpoint} Error`, data, 'error');
+        }
+      } catch (err) {
+        logResponse(`POST ${endpoint} Network Failure`, err.message, 'error');
+      }
+    }
+
+    function clearLogsConsole() {
+      document.getElementById('consoleLogsArea').innerHTML = '';
+    }
+
+    function escapeHTML(str) {
+      return str.replace(/[&<>'"]/g, 
+        tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
+      );
+    }
+
+    // Handle tool change settings
+    function handleToolChange(tool) {
+      const fileInput = document.getElementById('fileInputEl');
+      const uploadLabel = document.getElementById('uploadLabel');
+      
+      selectedFiles = [];
+      uploadedFileKeys = [];
+      updateSelectedFilesListUI();
+
+      // Configure multi or single uploads based on tools
+      if (tool === 'merge' || tool === 'jpgToPdf') {
+        fileInput.multiple = true;
+        uploadLabel.innerHTML = `<span class="step-number">2</span>Select File(s) <span style="color:var(--color-primary); font-size:0.75rem;">(Supports Multiple PDFs/Images)</span>`;
+      } else {
+        fileInput.multiple = false;
+        uploadLabel.innerHTML = `<span class="step-number">2</span>Select File <span style="color:var(--color-primary); font-size:0.75rem;">(Single File)</span>`;
+      }
+
+      renderOptionsContainer(tool);
+    }
+
+    // File selection handler
+    function handleFileChange(input) {
+      selectedFiles = Array.from(input.files);
+      updateSelectedFilesListUI();
+    }
+
+    function updateSelectedFilesListUI() {
+      const container = document.getElementById('selectedFilesList');
+      
+      if (selectedFiles.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+
+      container.innerHTML = selectedFiles.map((file, i) => `
+        <div class="selected-file-item">
+          <span>${i + 1}. ${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
+        </div>
+      `).join('');
+    }
+
+    // Render configuration inputs
+    function renderOptionsContainer(tool) {
+      const container = document.getElementById('toolOptionsContainer');
+      let html = '';
+
+      switch (tool) {
+        case 'split':
+          html = `
+            <div class="form-group">
+              <label>Page Range to Extract (e.g. "1-2", "4")</label>
+              <input type="text" id="optSplitRanges" value="1" placeholder='e.g., "1", "2-3"'>
+            </div>
+          `;
+          break;
+        case 'merge':
+          html = `
+            <div class="form-group">
+              <label>Merge Sequence Order (e.g. "0,1")</label>
+              <input type="text" id="optMergeOrder" value="0,1" placeholder="e.g., 0, 1">
+            </div>
+          `;
+          break;
+        case 'compress':
+          html = `
+            <div class="form-group">
+              <label>Compression Grade</label>
+              <select id="optCompressQuality">
+                <option value="medium">Medium (Standard shrink)</option>
+                <option value="low">Low (Maximum size shrink)</option>
+                <option value="high">High (High resolution quality)</option>
+              </select>
+            </div>
+          `;
+          break;
+        case 'rotate':
+          html = `
+            <div class="form-group">
+              <label>Angle</label>
+              <select id="optRotateAngle">
+                <option value="90">90 Degrees Clockwise</option>
+                <option value="180">180 Degrees</option>
+                <option value="270">270 Degrees Counter-Clockwise</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Pages (Comma-separated numbers or leave empty for all)</label>
+              <input type="text" id="optRotatePages" value="1" placeholder="e.g., 1, 2">
+            </div>
+          `;
+          break;
+        case 'protect':
+          html = `
+            <div class="form-group">
+              <label>User / Open Password</label>
+              <input type="text" id="optProtectUserPwd" value="userpwd123" placeholder="Leave empty for none">
+            </div>
+            <div class="form-group">
+              <label>Owner / Permissions Password</label>
+              <input type="text" id="optProtectOwnerPwd" value="ownerpwd123" placeholder="Leave empty for none">
+            </div>
+          `;
+          break;
+        case 'watermark':
+          html = `
+            <div class="form-group">
+              <label>Overlay Watermark Text</label>
+              <input type="text" id="optWatermarkText" value="CONFIDENTIAL" required>
+            </div>
+            <div class="form-group">
+              <label>Font Size</label>
+              <input type="number" id="optWatermarkFontSize" value="48">
+            </div>
+            <div class="form-group">
+              <label>Text Opacity (0.1 to 1.0)</label>
+              <input type="number" step="0.1" id="optWatermarkOpacity" value="0.3" min="0.1" max="1">
+            </div>
+            <div class="form-group">
+              <label>Position</label>
+              <select id="optWatermarkPos">
+                <option value="center">Center Diagonal</option>
+                <option value="top">Top Left</option>
+                <option value="bottom">Bottom Right</option>
+              </select>
+            </div>
+          `;
+          break;
+        case 'pdfToJpg':
+          html = `
+            <div class="form-group">
+              <label>Render resolution DPI (Default 150)</label>
+              <input type="number" id="optPdfToJpgDpi" value="150">
+            </div>
+          `;
+          break;
+        case 'officeConvert':
+          html = `
+            <div class="form-group">
+              <label>Convert Action</label>
+              <select id="optOfficeDir">
+                <option value="to-pdf">Office Document to PDF</option>
+              </select>
+            </div>
+          `;
+          break;
+        case 'ocr':
+          html = `
+            <div class="form-group">
+              <label>OCR Language Tags</label>
+              <input type="text" id="optOcrLangs" value="eng" placeholder="eng, hin">
+            </div>
+          `;
+          break;
+        default:
+          html = `<p style="font-size:0.85rem; color: var(--color-text-muted);">No settings needed.</p>`;
+      }
+
+      container.innerHTML = html;
+    }
+
+    // Authenticated API request
+    async function apiCall(endpoint, method, body = null) {
+      const headers = { 'Authorization': `Bearer ${jwtToken}` };
+      if (body) {
+        headers['Content-Type'] = 'application/json';
+      }
+
+      const response = await fetch(`${API_URL}${endpoint}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : null
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || `API request failed with status: ${response.status}`);
+      }
+      return data;
+    }
+
+    // Direct Upload to Spaces (single file)
+    function uploadSingleFile(file, uploadUrl) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl, true);
+        xhr.setRequestHeader('Content-Type', file.type || 'application/pdf');
+
+        xhr.onload = () => {
+          if (xhr.status === 200 || xhr.status === 201) {
+            resolve();
+          } else {
+            reject(new Error(`Spaces upload returned status: ${xhr.status}`));
+          }
+        };
+
+        xhr.onerror = (e) => reject(new Error('Spaces upload network connection failed'));
+        xhr.send(file);
+      });
+    }
+
+    // UNIFIED E2E WORKFLOW RUNNER
+    async function runUnifiedExecutionFlow() {
+      // Check if opened via local file protocol
+      if (window.location.protocol === 'file:') {
+        document.getElementById('fileProtocolWarning').style.display = 'block';
+        alert('CORS Blocked: You must access the client via http://localhost:5000/test instead of file://!');
+        return;
+      }
+
+      // 1. Pre-validation checks
+      if (!jwtToken) {
+        alert('You must sign up/in or generate a Guest Session first!');
+        return;
+      }
+
+      if (selectedFiles.length === 0) {
+        alert('Please select at least one file to process!');
+        return;
+      }
+
+      const tool = document.getElementById('selectedTool').value;
+      const executeBtn = document.getElementById('executeBtn');
+      const progressBox = document.getElementById('executionProgressBox');
+      const successResultCard = document.getElementById('successResultCard');
+      const uploadProgressContainer = document.getElementById('uploadProgressContainer');
+      const uploadProgressBar = document.getElementById('uploadProgressBar');
+
+      // Reset panels
+      successResultCard.style.display = 'none';
+      progressBox.style.display = 'block';
+      executeBtn.disabled = true;
+
+      // Reset Step classes
+      document.getElementById('stepUpload').className = 'progress-step active';
+      document.getElementById('stepQueue').className = 'progress-step';
+      document.getElementById('stepPoll').className = 'progress-step';
+
+      uploadedFileKeys = [];
+
+      try {
+        // --- PHASE 1: DIRECT FILE UPLOADS ---
+        uploadProgressContainer.style.display = 'block';
+        uploadProgressBar.style.width = '0%';
+        
+        for (let i = 0; i < selectedFiles.length; i++) {
+          const file = selectedFiles[i];
+          document.getElementById('stepUploadText').textContent = `Uploading file ${i + 1}/${selectedFiles.length}: ${file.name}...`;
+
+          // A. Request Presign S3 upload Url
+          const presignResponse = await apiCall('/api/upload/presign', 'POST', {
+            fileName: file.name,
+            contentType: file.type || 'application/pdf',
+            fileSize: file.size
+          });
+
+          logResponse(`Presigned S3 URL created for file ${i + 1}`, {
+            fileName: file.name,
+            fileKey: presignResponse.fileKey
+          });
+
+          // B. Upload file binary directly to space
+          await uploadSingleFile(file, presignResponse.uploadUrl);
+          
+          uploadedFileKeys.push(presignResponse.fileKey);
+          
+          // Increment progress
+          const percent = ((i + 1) / selectedFiles.length) * 100;
+          uploadProgressBar.style.width = `${percent}%`;
+        }
+
+        uploadProgressContainer.style.display = 'none';
+        document.getElementById('stepUpload').className = 'progress-step completed';
+        document.getElementById('stepUploadText').textContent = `Uploaded all ${selectedFiles.length} file(s) to DigitalOcean Spaces!`;
+
+        // --- PHASE 2: QUEUE JOB DISPATCH ---
+        document.getElementById('stepQueue').className = 'progress-step active';
+        
+        // Assemble options payload
+        const options = {};
+        switch (tool) {
+          case 'split':
+            options.ranges = document.getElementById('optSplitRanges').value.split(',').map(r => r.trim());
+            break;
+          case 'merge':
+            options.order = document.getElementById('optMergeOrder').value.split(',').map(o => parseInt(o.trim(), 10)).filter(n => !isNaN(n));
+            break;
+          case 'compress':
+            options.quality = document.getElementById('optCompressQuality').value;
+            break;
+          case 'rotate':
+            options.angle = parseInt(document.getElementById('optRotateAngle').value, 10);
+            const rawPages = document.getElementById('optRotatePages').value;
+            options.pages = rawPages ? rawPages.split(',').map(p => parseInt(p.trim(), 10)).filter(n => !isNaN(n)) : [];
+            break;
+          case 'protect':
+            options.userPassword = document.getElementById('optProtectUserPwd').value || undefined;
+            options.ownerPassword = document.getElementById('optProtectOwnerPwd').value || undefined;
+            break;
+          case 'watermark':
+            options.text = document.getElementById('optWatermarkText').value;
+            options.fontSize = parseInt(document.getElementById('optWatermarkFontSize').value, 10);
+            options.opacity = parseFloat(document.getElementById('optWatermarkOpacity').value);
+            options.position = document.getElementById('optWatermarkPos').value;
+            break;
+          case 'pdfToJpg':
+            options.dpi = parseInt(document.getElementById('optPdfToJpgDpi').value, 10);
+            break;
+          case 'officeConvert':
+            options.direction = document.getElementById('optOfficeDir').value;
+            break;
+          case 'ocr':
+            options.languages = document.getElementById('optOcrLangs').value.split(',').map(l => l.trim());
+            break;
+        }
+
+        const jobPayload = {
+          tool,
+          inputFiles: uploadedFileKeys,
+          options
+        };
+
+        logResponse('POST /api/jobs Request', jobPayload);
+        const jobResponse = await apiCall('/api/jobs', 'POST', jobPayload);
+        
+        const jobId = jobResponse.job.id;
+        const manualJobInput = document.getElementById('manualJobIdInput');
+        if (manualJobInput) {
+          manualJobInput.value = jobId;
+        }
+        logResponse('POST /api/jobs Success', jobResponse, 'success');
+        
+        document.getElementById('stepQueue').className = 'progress-step completed';
+
+        // --- PHASE 3: POLL JOB STATUS ON BACKGROUND WORKER ---
+        document.getElementById('stepPoll').className = 'progress-step active';
+        document.getElementById('stepPollText').textContent = 'Processing job on worker queue...';
+
+        let attempts = 0;
+        const maxAttempts = 60;
+
+        const interval = setInterval(async () => {
+          attempts++;
+          if (attempts > maxAttempts) {
+            clearInterval(interval);
+            progressBox.style.display = 'none';
+            executeBtn.disabled = false;
+            logResponse('Polling Timeout', 'Job did not complete within 60s limit.', 'error');
+            alert('Execution Timeout!');
+            return;
+          }
+
+          try {
+            const checkData = await apiCall(`/api/jobs/${jobId}`, 'GET');
+            const status = checkData.job.status;
+            document.getElementById('stepPollText').textContent = `Processing status: ${status}...`;
+
+            if (status === 'COMPLETED') {
+              clearInterval(interval);
+              progressBox.style.display = 'none';
+              executeBtn.disabled = false;
+              document.getElementById('stepPoll').className = 'progress-step completed';
+              logResponse('🎉 Worker Job Completed!', checkData.job, 'success');
+
+              // Display Success banner
+              const resultKey = checkData.job.outputFile;
+              document.getElementById('resultKeyOutput').value = resultKey;
+              
+              // Build direct spaces download link
+              lastCompletedOutputUrl = `https://igrowbig.blr1.digitaloceanspaces.com/${resultKey}`;
+              successResultCard.style.display = 'block';
+              
+            } else if (status === 'FAILED') {
+              clearInterval(interval);
+              progressBox.style.display = 'none';
+              executeBtn.disabled = false;
+              logResponse('❌ Worker job execution failed', checkData.job, 'error');
+              alert(`Worker failed processing job!\nDetails: ${checkData.job.errorMessage}`);
+            }
+          } catch (pollErr) {
+            clearInterval(interval);
+            progressBox.style.display = 'none';
+            executeBtn.disabled = false;
+            logResponse('Polling connection error', pollErr.message, 'error');
+          }
+        }, 1000);
+
+      } catch (err) {
+        progressBox.style.display = 'none';
+        uploadProgressContainer.style.display = 'none';
+        executeBtn.disabled = false;
+        logResponse('Unified Workflow Process Failed', err.message, 'error');
+        alert(`Error executing workflow: ${err.message}`);
+      }
+    }
+
+    function openOutputLink() {
+      if (lastCompletedOutputUrl) {
+        window.open(lastCompletedOutputUrl, '_blank');
+      }
+    }
+
+    // Webhook Sim upgrades
+    async function simulateUpgradeToPro() {
+      if (!jwtToken) {
+        alert('Please generate a Guest Session at the top first!');
+        return;
+      }
+
+      try {
+        const payload = JSON.parse(atob(jwtToken.split('.')[1]));
+        const userId = payload.userId;
+        const mockSubId = `sub_mock_${userId.substring(0, 8)}`;
+        
+        const webhookPayload = {
+          event: 'subscription.charged',
+          payload: {
+            subscription: {
+              entity: {
+                id: mockSubId,
+                status: 'active',
+                current_end: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)
+              }
+            }
+          }
+        };
+
+        logResponse('POST /api/webhooks/razorpay Simulation', webhookPayload);
+
+        const response = await fetch(`${API_URL}/api/webhooks/razorpay`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(webhookPayload)
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          logResponse('Webhook Simulator Upgraded Account to PRO!', data, 'success');
+          alert('Webhook upgrade processed! Checking plan renewal details...');
+          
+          setTimeout(async () => {
+            const profile = await apiCall('/api/users/me', 'GET');
+            alert(`Upgrade Confirmed! Plan status: ${profile.plan}`);
+            
+            // Re-fetch token context from profile if needed (in production they would sign in again, here we log it)
+            jwtToken = localStorage.getItem('saas_jwt_token') || jwtToken;
+            updateStatusBadgeUI();
+          }, 1000);
+        } else {
+          logResponse('Simulation failed', data, 'error');
+        }
+      } catch (err) {
+        logResponse('Webhook upgrade connection error', err.message, 'error');
+      }
+    }
+  </script>
+</body>
+</html>

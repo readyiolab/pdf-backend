@@ -1,0 +1,17 @@
+{
+  "name": "pdf-tools-saas",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "api",
+    "worker"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace=api run dev",
+    "dev:worker": "npm --workspace=worker run dev",
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:worker\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
