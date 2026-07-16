@@ -39,7 +39,7 @@ export const uploadService = {
     });
 
     try {
-      const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 900 });
+      const uploadUrl = await getSignedUrl(s3, command, { expiresIn: env.PRESIGN_TTL_SECONDS });
       return {
         uploadUrl,
         fileKey,

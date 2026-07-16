@@ -8,6 +8,9 @@ export const startLightWorker = () => {
   const worker = new Worker(LIGHT_JOBS_QUEUE, jobRouter, {
     connection: redis as any,
     concurrency: 10, // Process up to 10 lightweight tasks concurrently
+    // Detect workers that died mid-job and recover the job rather than losing it.
+    stalledInterval: 30000,
+    maxStalledCount: 2,
   });
 
   worker.on('active', (job) => {

@@ -25,7 +25,7 @@ export async function watermarkProcessor(
     localInputPath = await downloadFromS3(inputFileKeys[0]);
 
     // 2. Load PDF document
-    const fileBytes = fs.readFileSync(localInputPath);
+    const fileBytes = await fs.promises.readFile(localInputPath);
     const pdfDoc = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
     
     // 3. Load Helvetica standard font
@@ -115,7 +115,7 @@ export async function watermarkProcessor(
     // 5. Save locally
     const tempDir = path.join(process.cwd(), 'temp');
     watermarkedLocalPath = path.join(tempDir, `watermark_${crypto.randomUUID()}.pdf`);
-    fs.writeFileSync(watermarkedLocalPath, watermarkedBytes);
+    await fs.promises.writeFile(watermarkedLocalPath, watermarkedBytes);
 
     // 6. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/watermarked_${Date.now()}.pdf`;

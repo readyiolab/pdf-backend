@@ -6,7 +6,8 @@ export const webhooksController = {
   async razorpayWebhook(req: Request, res: Response, next: NextFunction) {
     try {
       const signature = req.headers['x-razorpay-signature'] as string;
-      const rawBody = (req as any).rawBody;
+      // With express.raw, req.body is the raw Buffer of the request payload.
+      const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
 
       if (!signature) {
         res.status(400).json({ status: 'error', message: 'Signature missing' });

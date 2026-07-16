@@ -1,4 +1,9 @@
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3';
 import { env } from '../config/env';
 import fs from 'fs';
 import path from 'path';
@@ -68,13 +73,38 @@ export async function uploadToS3(
     Key: destinationKey,
     Body: fileStream,
     ContentType: contentType,
-    ACL: 'public-read',
+    // Results are PRIVATE. They are retrieved only via short-lived signed URLs
+    // issued to the job owner by the API (never a public object URL).
+    ACL: 'private',
   });
 
   await s3.send(command);
   logger.debug({ destinationKey }, 'Spaces upload complete');
 
   return destinationKey;
+}
+
+/**
+ * Deletes one or more objects from storage. Used to purge a failed job's inputs
+ * immediately rather than waiting for the scheduled sweep.
+ */
+export async function deleteFromS3(keys: string[]): Promise<void> {
+  const objects = keys.filter(Boolean).map((Key) => ({ Key }));
+  if (objects.length === 0) return;
+
+  for (let i = 0; i < objects.length; i += 1000) {
+    const chunk = objects.slice(i, i + 1000);
+    try {
+      await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: env.DO_SPACES_BUCKET,
+          Delete: { Objects: chunk, Quiet: true },
+        })
+      );
+    } catch (err) {
+      logger.warn({ err }, 'Failed to delete objects from storage');
+    }
+  }
 }
 
 /**

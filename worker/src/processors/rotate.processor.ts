@@ -25,7 +25,7 @@ export async function rotateProcessor(
     localInputPath = await downloadFromS3(inputFileKeys[0]);
 
     // 2. Load PDF
-    const fileBytes = fs.readFileSync(localInputPath);
+    const fileBytes = await fs.promises.readFile(localInputPath);
     const pdfDoc = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
     const pageCount = pdfDoc.getPageCount();
 
@@ -47,7 +47,7 @@ export async function rotateProcessor(
     // 4. Save locally
     const tempDir = path.join(process.cwd(), 'temp');
     rotatedLocalPath = path.join(tempDir, `rotated_${crypto.randomUUID()}.pdf`);
-    fs.writeFileSync(rotatedLocalPath, rotatedBytes);
+    await fs.promises.writeFile(rotatedLocalPath, rotatedBytes);
 
     // 5. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/rotated_${Date.now()}.pdf`;

@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { env } from '../config/env';
 import { getPool } from '../lib/mysql';
+import { verifyToken, isTokenRevoked } from '../lib/jwt';
+import { getCachedUser, setCachedUser } from '../lib/userCache';
 import { AppError } from './errorHandler.middleware';
 
 declare global {
@@ -10,15 +10,13 @@ declare global {
       user: {
         id: string;
         plan: 'FREE' | 'PRO';
+        isGuest: boolean;
       };
+      // The raw token claims, used by logout to revoke this exact token.
+      tokenJti?: string;
+      tokenExp?: number;
     }
   }
-}
-
-interface JWTPayload {
-  userId: string;
-  email: string;
-  plan: 'FREE' | 'PRO';
 }
 
 export const authMiddleware = async (
@@ -33,29 +31,44 @@ export const authMiddleware = async (
     }
 
     const token = authHeader.split(' ')[1];
-    
-    // Verify token
-    let decoded: JWTPayload;
+
+    // Verify token signature/expiry
+    let decoded;
     try {
-      decoded = jwt.verify(token, env.JWT_SECRET) as JWTPayload;
+      decoded = verifyToken(token);
     } catch (err) {
       throw new AppError('Invalid or expired authentication token', 401);
     }
 
-    // Check if user still exists in the database
-    const pool = getPool();
-    const [users]: any = await pool.query('SELECT id, plan FROM tbl_user WHERE id = ?', [decoded.userId]);
-    const user = users[0];
+    // Reject tokens that have been explicitly revoked (e.g. via logout)
+    if (decoded.jti && (await isTokenRevoked(decoded.jti))) {
+      throw new AppError('This session has been logged out', 401);
+    }
 
-    if (!user) {
-      throw new AppError('The user belonging to this token no longer exists', 401);
+    // Resolve the user, preferring a short-TTL cache to keep MySQL off the hot
+    // path. A cache miss falls back to the DB and repopulates the cache.
+    let cached = await getCachedUser(decoded.userId);
+    if (!cached) {
+      const pool = getPool();
+      const [users]: any = await pool.query('SELECT id, plan FROM tbl_user WHERE id = ?', [
+        decoded.userId,
+      ]);
+      const user = users[0];
+      if (!user) {
+        throw new AppError('The user belonging to this token no longer exists', 401);
+      }
+      cached = { id: user.id, plan: user.plan as 'FREE' | 'PRO' };
+      await setCachedUser(cached);
     }
 
     // Attach user to request
     req.user = {
-      id: user.id,
-      plan: user.plan as 'FREE' | 'PRO',
+      id: cached.id,
+      plan: cached.plan,
+      isGuest: Boolean(decoded.isGuest),
     };
+    req.tokenJti = decoded.jti;
+    req.tokenExp = decoded.exp;
 
     next();
   } catch (err) {

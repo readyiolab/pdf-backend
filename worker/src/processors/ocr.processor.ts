@@ -81,7 +81,7 @@ export async function ocrProcessor(
     const mergedOcrPdf = await PDFDocument.create();
 
     for (const pagePdfPath of ocrPageFiles) {
-      const fileBytes = fs.readFileSync(pagePdfPath);
+      const fileBytes = await fs.promises.readFile(pagePdfPath);
       const pageDoc = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
       const copiedPages = await mergedOcrPdf.copyPages(pageDoc, pageDoc.getPageIndices());
       copiedPages.forEach((page) => mergedOcrPdf.addPage(page));
@@ -90,7 +90,7 @@ export async function ocrProcessor(
     const mergedBytes = await mergedOcrPdf.save();
     
     mergedOcrPath = path.join(tempDir, `ocr_final_${crypto.randomUUID()}.pdf`);
-    fs.writeFileSync(mergedOcrPath, mergedBytes);
+    await fs.promises.writeFile(mergedOcrPath, mergedBytes);
 
     // 5. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/ocr_${Date.now()}.pdf`;

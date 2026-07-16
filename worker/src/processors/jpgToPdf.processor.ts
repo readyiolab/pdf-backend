@@ -58,7 +58,7 @@ export async function jpgToPdfProcessor(
     // 3. Save PDF locally
     const tempDir = path.join(process.cwd(), 'temp');
     pdfLocalPath = path.join(tempDir, `jpg_to_pdf_${crypto.randomUUID()}.pdf`);
-    fs.writeFileSync(pdfLocalPath, pdfBytes);
+    await fs.promises.writeFile(pdfLocalPath, pdfBytes);
 
     // 4. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/converted_${Date.now()}.pdf`;

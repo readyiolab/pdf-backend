@@ -21,6 +21,19 @@ const envSchema = z.object({
   DO_SPACES_REGION: z.string().default('blr1'),
   DO_SPACES_BUCKET: z.string(),
   DO_SPACES_ENDPOINT: z.string().url(),
+
+  // Malware scanning (optional). When disabled, the scan step is a no-op.
+  CLAMAV_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  CLAMAV_HOST: z.string().default('127.0.0.1'),
+  CLAMAV_PORT: z.coerce.number().default(3310),
+
+  // Cleanup sweep cadence (minutes) for expired jobs and their files.
+  CLEANUP_INTERVAL_MINUTES: z.coerce.number().default(15),
+  // Jobs stuck in PROCESSING longer than this are considered stalled and failed.
+  STALE_JOB_MINUTES: z.coerce.number().default(30),
 });
 
 const parsed = envSchema.safeParse(process.env);

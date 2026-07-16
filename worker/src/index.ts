@@ -3,6 +3,7 @@ import { env } from './config/env';
 import { logger } from './lib/logger';
 import { startHeavyWorker } from './queue/heavyQueue.worker';
 import { startLightWorker } from './queue/lightQueue.worker';
+import { startMaintenanceWorker } from './queue/maintenance.worker';
 import { redis } from './lib/redis';
 import { createMysqlPool, getPool } from './lib/mysql';
 
@@ -10,6 +11,7 @@ logger.info('Initializing Worker Service...');
 
 let heavyWorker: any;
 let lightWorker: any;
+let maintenanceWorker: any;
 let server: any;
 
 // Spin up a minimal Express server for container/health checks
@@ -65,6 +67,11 @@ const gracefulShutdown = async () => {
     logger.info('Light worker closed.');
   }
 
+  if (maintenanceWorker) {
+    await maintenanceWorker.close();
+    logger.info('Maintenance worker closed.');
+  }
+
   // Disconnect Redis
   await redis.quit();
   logger.info('Redis connection closed.');
@@ -92,6 +99,7 @@ async function bootstrap() {
     // 2. Start BullMQ workers
     heavyWorker = startHeavyWorker();
     lightWorker = startLightWorker();
+    maintenanceWorker = await startMaintenanceWorker();
 
     // 3. Start health check listener
     server = app.listen(env.PORT, () => {

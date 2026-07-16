@@ -96,6 +96,12 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
+    // Performance indexes (idempotent — safe on existing databases too).
+    await ensureIndex(conn, 'tbl_job', 'idx_job_expiresAt', 'expiresAt');
+    await ensureIndex(conn, 'tbl_job', 'idx_job_status', 'status');
+    await ensureIndex(conn, 'tbl_job', 'idx_job_user_created', 'userId, createdAt');
+    await ensureIndex(conn, 'tbl_subscription', 'idx_sub_razorpay', 'razorpaySubId');
+
     logger.info('Prefixed database tables (tbl_) initialization complete.');
   } catch (err: any) {
     logger.error({ err }, 'Failed to initialize database tables with prefixes');
@@ -103,4 +109,24 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
   } finally {
     conn.release();
   }
+}
+
+/**
+ * Creates an index only if it doesn't already exist. MySQL has no
+ * "CREATE INDEX IF NOT EXISTS", so we check information_schema first.
+ */
+async function ensureIndex(
+  conn: mysql.PoolConnection,
+  table: string,
+  indexName: string,
+  columns: string
+): Promise<void> {
+  const [rows]: any = await conn.query(
+    `SELECT COUNT(1) AS cnt FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+    [table, indexName]
+  );
+  if (rows[0]?.cnt > 0) return;
+  await conn.query(`CREATE INDEX ${indexName} ON ${table} (${columns})`);
+  logger.info({ table, indexName }, 'Created database index');
 }

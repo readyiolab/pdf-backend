@@ -34,7 +34,7 @@ export async function mergeProcessor(
     const mergedPdf = await PDFDocument.create();
 
     for (const filePath of sortedPaths) {
-      const fileBytes = fs.readFileSync(filePath);
+      const fileBytes = await fs.promises.readFile(filePath);
       const pdf = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
       const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
       
@@ -48,7 +48,7 @@ export async function mergeProcessor(
     // 4. Save to temporary local merged path
     const tempDir = path.join(process.cwd(), 'temp');
     mergedLocalPath = path.join(tempDir, `merged_${crypto.randomUUID()}.pdf`);
-    fs.writeFileSync(mergedLocalPath, mergedBytes);
+    await fs.promises.writeFile(mergedLocalPath, mergedBytes);
 
     // 5. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/merged_${Date.now()}.pdf`;

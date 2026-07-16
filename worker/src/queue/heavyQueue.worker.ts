@@ -8,6 +8,9 @@ export const startHeavyWorker = () => {
   const worker = new Worker(HEAVY_JOBS_QUEUE, jobRouter, {
     connection: redis as any,
     concurrency: 2, // Only process 2 heavy tasks (e.g. LibreOffice, OCR, compress) at a time
+    // Detect workers that died mid-job and recover the job rather than losing it.
+    stalledInterval: 30000,
+    maxStalledCount: 2,
   });
 
   worker.on('active', (job) => {

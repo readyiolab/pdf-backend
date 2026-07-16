@@ -47,7 +47,7 @@ export async function splitProcessor(
     localInputPath = await downloadFromS3(inputFileKeys[0]);
 
     // 2. Load PDF document
-    const fileBytes = fs.readFileSync(localInputPath);
+    const fileBytes = await fs.promises.readFile(localInputPath);
     const srcPdf = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
     const maxPages = srcPdf.getPageCount();
 
@@ -67,7 +67,7 @@ export async function splitProcessor(
     // 5. Save locally
     const tempDir = path.join(process.cwd(), 'temp');
     splitLocalPath = path.join(tempDir, `split_${crypto.randomUUID()}.pdf`);
-    fs.writeFileSync(splitLocalPath, splitBytes);
+    await fs.promises.writeFile(splitLocalPath, splitBytes);
 
     // 6. Upload output to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/split_${Date.now()}.pdf`;

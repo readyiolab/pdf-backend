@@ -48,7 +48,9 @@ export const errorHandler = (
   }
 
   // Fallback Generic Error (e.g. database error, redis error)
-  logger.error({ err, url: req.url, body: req.body }, 'Unhandled server error');
+  // NOTE: request body is intentionally NOT logged — it can contain passwords,
+  // tokens, and other PII. Log only non-sensitive request metadata.
+  logger.error({ err, url: req.url, method: req.method }, 'Unhandled server error');
   
   return res.status(500).json({
     status: 'error',

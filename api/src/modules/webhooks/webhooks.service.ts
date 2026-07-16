@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getPool } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
+import { invalidateUser } from '../../lib/userCache';
 import { AppError } from '../../middleware/errorHandler.middleware';
 
 export const webhooksService = {
@@ -12,13 +13,18 @@ export const webhooksService = {
       return { success: false, message: 'Webhook secret missing' };
     }
 
-    // 1. Verify webhook signature
+    // 1. Verify webhook signature (constant-time comparison to avoid timing leaks)
     const computedSignature = crypto
       .createHmac('sha256', webhookSecret)
       .update(rawBody)
       .digest('hex');
 
-    if (computedSignature !== signature) {
+    const expected = Buffer.from(computedSignature, 'utf8');
+    const received = Buffer.from(signature, 'utf8');
+    if (
+      expected.length !== received.length ||
+      !crypto.timingSafeEqual(expected, received)
+    ) {
       logger.error('Invalid Razorpay Webhook signature');
       throw new AppError('Invalid webhook signature', 400);
     }
@@ -64,8 +70,9 @@ export const webhooksService = {
               ['active', currentPeriodEnd, dbSub.id]
             );
             await conn.query('UPDATE tbl_user SET plan = ? WHERE id = ?', ['PRO', dbSub.userId]);
-            
+
             await conn.commit();
+            await invalidateUser(dbSub.userId);
             logger.info({ userId: dbSub.userId }, 'User upgraded to PRO plan via webhook');
           } catch (err) {
             await conn.rollback();
@@ -99,6 +106,7 @@ export const webhooksService = {
             await conn.query('UPDATE tbl_user SET plan = ? WHERE id = ?', ['FREE', dbSub.userId]);
 
             await conn.commit();
+            await invalidateUser(dbSub.userId);
             logger.info({ userId: dbSub.userId }, 'User downgraded to FREE plan via webhook');
           } catch (err) {
             await conn.rollback();
