@@ -90,3 +90,78 @@ To ensure that objects in the Space remain organized, descriptive, and easily un
    ```bash
    npm run dev
    ```
+
+---
+
+## 6. Production Deployment (PM2)
+
+The production box (`ubuntu-s-2vcpu-4gb-120gb-intel-blr1-01`) runs both services under PM2 from `/var/www/pdf/pdf-backend`, driven by the root [`ecosystem.config.js`](file:///d:/Arun%20sir%20Projects/PDFPRODUCT/backend/ecosystem.config.js):
+
+| PM2 name            | Entry point                          | cwd                                       |
+|----------------------|---------------------------------------|--------------------------------------------|
+| `pdf-saas-api`       | `dist/api/src/index.js`               | `/var/www/pdf/pdf-backend/api`              |
+| `pdf-saas-worker`    | `dist/worker/src/index.js`            | `/var/www/pdf/pdf-backend/worker`           |
+
+Both services build from TypeScript (`tsc`) into `dist/` — nothing runs directly from `src/` in production, so **a code or `.env` change is not live until you rebuild**.
+
+### 6.1 Clean rebuild + restart (standard deploy)
+
+Run from `/var/www/pdf/pdf-backend`:
+
+```bash
+# 1. Pull latest code
+git pull
+
+# 2. Install any new/changed dependencies (root installs both workspaces)
+npm install
+
+# 3. Compile both services (api/dist and worker/dist)
+npm run build
+
+# 4. Restart both processes with the freshly built dist/
+pm2 restart pdf-saas-api pdf-saas-worker
+
+# 5. Confirm both are online and tail logs for startup errors
+pm2 status
+pm2 logs pdf-saas-api --lines 30
+pm2 logs pdf-saas-worker --lines 30
+```
+
+`pm2 restart` reloads the process in place using the existing `ecosystem.config.js` entry — this is enough for a normal code/env update.
+
+### 6.2 Full delete + fresh start (when restart isn't enough)
+
+Use this if a process is stuck, wedged in a crash loop, or `ecosystem.config.js` itself changed (new app, new env block, renamed script):
+
+```bash
+# Stop and completely remove both processes from PM2's process list
+pm2 delete pdf-saas-api pdf-saas-worker
+
+# Rebuild (skip if dist/ is already current)
+npm run build
+
+# Re-register and start both apps fresh from ecosystem.config.js
+pm2 start ecosystem.config.js
+
+# Persist this process list so it survives a server reboot
+pm2 save
+```
+
+`pm2 delete` removes the process entirely (unlike `stop`, which just kills it but keeps it registered) — use this when you want PM2 to re-read `ecosystem.config.js` from scratch rather than reuse stale in-memory process metadata.
+
+### 6.3 Environment variable changes
+
+`.env` is loaded once at process boot via `dotenv` (`api/src/config/env.ts`, `worker/src/config/env.ts`). Editing `.env` alone does **nothing** until the process restarts:
+
+```bash
+pm2 restart pdf-saas-api pdf-saas-worker --update-env
+```
+
+`--update-env` is required specifically when only `.env` changed and `dist/` didn't — otherwise PM2 can keep the old environment cached from the last start.
+
+### 6.4 Troubleshooting checklist
+
+- **Logs**: `pm2 logs <name> --lines 50`, or read directly: `/root/.pm2/logs/pdf-saas-api-error.log` / `-out.log` (same pattern for `pdf-saas-worker`).
+- **503 "Service temporarily unavailable"**: the API's `errorHandler` maps Redis errors (`ReplyError`, connection refused/timeout) to a 503 instead of a generic 500. Check the Upstash console's Usage tab for the `COMMANDS` quota (free tier caps at 500K/month) — this is the most common cause.
+- **CORS "Origin ... not allowed"**: `CORS_ORIGINS` in the API's `.env` must list every real frontend origin (comma-separated, no trailing slash, e.g. `https://pdf.zuvigo.com`). It defaults to localhost-only origins if unset, which silently blocks all production browser traffic.
+- **Rate limiter / auth cache Redis failures**: these are designed to fail open (`passOnStoreError: true` in `rateLimit.middleware.ts`; try/catch fallbacks to MySQL in `auth.middleware.ts`) — they should never 503 the whole app on their own. Only BullMQ job creation (`POST /api/jobs`) genuinely requires Redis and will correctly 503 if it's down.
