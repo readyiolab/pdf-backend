@@ -1,8 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { getPool } from '../lib/mysql';
 import { verifyToken, isTokenRevoked } from '../lib/jwt';
-import { getCachedUser, setCachedUser } from '../lib/userCache';
+import { getCachedUser, setCachedUser, CachedUser } from '../lib/userCache';
 import { AppError } from './errorHandler.middleware';
+import { logger } from '../lib/logger';
 
 declare global {
   namespace Express {
@@ -40,14 +41,30 @@ export const authMiddleware = async (
       throw new AppError('Invalid or expired authentication token', 401);
     }
 
-    // Reject tokens that have been explicitly revoked (e.g. via logout)
-    if (decoded.jti && (await isTokenRevoked(decoded.jti))) {
+    // Reject tokens that have been explicitly revoked (e.g. via logout).
+    // Redis errors here are non-fatal: revocation is a defense-in-depth check
+    // on top of JWT signature/expiry verification, not the primary boundary,
+    // so we fail open rather than taking down all authenticated traffic on a
+    // Redis outage/quota error.
+    let revoked = false;
+    try {
+      revoked = decoded.jti ? await isTokenRevoked(decoded.jti) : false;
+    } catch (err) {
+      logger.warn({ err }, 'Redis unavailable, skipping token revocation check');
+    }
+    if (revoked) {
       throw new AppError('This session has been logged out', 401);
     }
 
     // Resolve the user, preferring a short-TTL cache to keep MySQL off the hot
-    // path. A cache miss falls back to the DB and repopulates the cache.
-    let cached = await getCachedUser(decoded.userId);
+    // path. A cache miss (or a Redis error reading it) falls back to the DB;
+    // a Redis error writing it back is a non-fatal cache-population failure.
+    let cached: CachedUser | null = null;
+    try {
+      cached = await getCachedUser(decoded.userId);
+    } catch (err) {
+      logger.warn({ err }, 'Redis unavailable, skipping user cache read');
+    }
     if (!cached) {
       const pool = getPool();
       const [users]: any = await pool.query('SELECT id, plan FROM tbl_user WHERE id = ?', [
@@ -58,7 +75,11 @@ export const authMiddleware = async (
         throw new AppError('The user belonging to this token no longer exists', 401);
       }
       cached = { id: user.id, plan: user.plan as 'FREE' | 'PRO' };
-      await setCachedUser(cached);
+      try {
+        await setCachedUser(cached);
+      } catch (err) {
+        logger.warn({ err }, 'Redis unavailable, skipping user cache write');
+      }
     }
 
     // Attach user to request
