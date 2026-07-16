@@ -47,11 +47,29 @@ export const errorHandler = (
     });
   }
 
-  // Fallback Generic Error (e.g. database error, redis error)
+  // Redis/queue outage (e.g. connection down, or provider quota exceeded like
+  // Upstash's "max requests limit exceeded"). Surfaced as a distinct 503 so
+  // clients can retry instead of treating it as an opaque server bug.
+  const errName = (err as { name?: string }).name;
+  const errCode = (err as { code?: string }).code;
+  if (
+    errName === 'ReplyError' ||
+    errName === 'MaxRetriesPerRequestError' ||
+    errCode === 'ECONNREFUSED' ||
+    errCode === 'ETIMEDOUT'
+  ) {
+    logger.error({ err, url: req.url, method: req.method }, 'Redis unavailable');
+    return res.status(503).json({
+      status: 'error',
+      message: 'Service temporarily unavailable. Please try again in a few minutes.',
+    });
+  }
+
+  // Fallback Generic Error (e.g. database error)
   // NOTE: request body is intentionally NOT logged — it can contain passwords,
   // tokens, and other PII. Log only non-sensitive request metadata.
   logger.error({ err, url: req.url, method: req.method }, 'Unhandled server error');
-  
+
   return res.status(500).json({
     status: 'error',
     message: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,

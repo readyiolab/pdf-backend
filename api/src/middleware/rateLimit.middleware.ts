@@ -16,6 +16,9 @@ function redisStore(prefix: string) {
 const common: Partial<Options> = {
   standardHeaders: true,
   legacyHeaders: false,
+  // If Redis is down (e.g. connection error, or provider quota exceeded), let
+  // requests through rather than 500ing all traffic on a rate-limiter outage.
+  passOnStoreError: true,
 };
 
 // General API limiter: generous, keyed per IP.
