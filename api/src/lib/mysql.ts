@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 import { env } from '../config/env';
 import { logger } from './logger';
-import { ensureIndex } from './ddl';
+import { ensureColumn, ensureIndex } from './ddl';
 import { initializeSigningSchema } from './signingSchema';
 
 let pool: mysql.Pool | null = null;
@@ -64,9 +64,16 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
         plan VARCHAR(50) DEFAULT 'FREE',
         dailyOpsUsed INT DEFAULT 0,
         dailyOpsResetAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+        monthlySignsUsed INT NOT NULL DEFAULT 0,
+        monthlySignsResetAt DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
         createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+    // Monthly signing quota counters (added after tbl_user first shipped, so
+    // they must be guarded ALTERs for already-created databases — the CREATE
+    // above only covers fresh installs).
+    await ensureColumn(conn, 'tbl_user', 'monthlySignsUsed', 'INT NOT NULL DEFAULT 0 AFTER dailyOpsResetAt');
+    await ensureColumn(conn, 'tbl_user', 'monthlySignsResetAt', 'DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) AFTER monthlySignsUsed');
 
     // 2. Job table -> tbl_job
     await conn.query(`

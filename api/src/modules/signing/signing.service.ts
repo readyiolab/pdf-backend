@@ -16,6 +16,7 @@ import { getPool } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { detectFileCategory } from '../../../../shared/fileType';
+import { PLAN_LIMITS } from '../../../../shared/constants';
 import {
   RECIPIENT_COLORS,
   SIGNING_LIMITS,
@@ -299,7 +300,8 @@ export const signingService = {
 
   /** Status tallies for the dashboard, in one round trip rather than six. */
   async getStats(userId: string) {
-    const [rows]: any = await getPool().query(
+    const pool = getPool();
+    const [rows]: any = await pool.query(
       `SELECT status, COUNT(1) AS count
          FROM tbl_sign_document
         WHERE ownerId = ?
@@ -317,10 +319,35 @@ export const signingService = {
     // the denominator would make the rate drop every time someone starts one.
     const finished = byStatus.SENT + byStatus.COMPLETED + byStatus.DECLINED + byStatus.EXPIRED;
 
+    // Monthly signing quota, so the dashboard can show "2 of 3 used" and the UI
+    // can warn before the send actually fails. Read the same counter the send
+    // reservation writes; treat an elapsed window as a fresh (0-used) month.
+    const [users]: any = await pool.query(
+      'SELECT plan, monthlySignsUsed, monthlySignsResetAt FROM tbl_user WHERE id = ?',
+      [userId]
+    );
+    const user = users[0];
+    const plan = (user?.plan as 'FREE' | 'PRO') ?? 'FREE';
+    const limit = PLAN_LIMITS[plan].maxMonthlySigns;
+    const windowElapsed =
+      !user?.monthlySignsResetAt ||
+      new Date(user.monthlySignsResetAt).getTime() < Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const used = windowElapsed ? 0 : Number(user.monthlySignsUsed ?? 0);
+
     return {
       byStatus,
       total,
       completionRate: finished > 0 ? Math.round((byStatus.COMPLETED / finished) * 100) : 0,
+      quota: {
+        used,
+        limit,
+        remaining: Math.max(0, limit - used),
+        // When the current window ends (null once it has already elapsed).
+        resetsAt: windowElapsed || !user?.monthlySignsResetAt
+          ? null
+          : new Date(new Date(user.monthlySignsResetAt).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        plan,
+      },
     };
   },
 

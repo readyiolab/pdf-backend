@@ -6,6 +6,10 @@ import { generateSigningToken } from '../../lib/signingSession';
 import { isMailerConfigured, sendMail } from '../../lib/mailer';
 import { invitationEmail } from './email.templates';
 import { SIGNING_LIMITS } from '../../../../shared/signing';
+import { PLAN_LIMITS } from '../../../../shared/constants';
+
+/** Rolling window (ms) over which the monthly signing quota is counted. */
+const SIGN_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Roles that are actually asked to do something. VIEWER/CC just receive a copy. */
 const ACTIONABLE_ROLES = new Set(['SIGNER', 'APPROVER']);
@@ -40,6 +44,11 @@ export const sendService = {
     if (!isMailerConfigured()) {
       throw new AppError('Email is not configured, so invitations cannot be delivered.', 503);
     }
+
+    // The owner's plan drives the monthly signing quota reserved below.
+    const [users]: any = await pool.query('SELECT plan FROM tbl_user WHERE id = ?', [userId]);
+    const plan = (users[0]?.plan as 'FREE' | 'PRO') ?? 'FREE';
+    const signLimit = PLAN_LIMITS[plan].maxMonthlySigns;
 
     const [recipients]: any = await pool.query(
       'SELECT * FROM tbl_sign_recipient WHERE documentId = ? ORDER BY signingOrder ASC, createdAt ASC',
@@ -101,6 +110,35 @@ export const sendService = {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
+
+      // Reserve one monthly signing credit atomically, as the FIRST step of the
+      // transaction. Mirrors the daily-ops reservation in jobs.service: a single
+      // guarded UPDATE avoids the read-modify-write race where two concurrent
+      // sends both pass a separate check. If the 30-day window has elapsed the
+      // counter resets to 1 and the window rolls; otherwise it increments only
+      // while still under the plan limit. Because it lives inside this
+      // transaction, a later failure (token minting, status flip) rolls the
+      // credit back automatically — no compensating refund needed.
+      const now = new Date();
+      const windowCutoff = new Date(now.getTime() - SIGN_WINDOW_MS);
+      const [reserve]: any = await conn.query(
+        `UPDATE tbl_user
+            SET monthlySignsUsed    = IF(monthlySignsResetAt < ?, 1, monthlySignsUsed + 1),
+                monthlySignsResetAt = IF(monthlySignsResetAt < ?, ?, monthlySignsResetAt)
+          WHERE id = ?
+            AND (monthlySignsResetAt < ? OR monthlySignsUsed < ?)`,
+        [windowCutoff, windowCutoff, now, userId, windowCutoff, signLimit]
+      );
+      if (reserve.affectedRows === 0) {
+        await conn.rollback();
+        throw new AppError(
+          plan === 'PRO'
+            ? `You've reached your monthly limit of ${signLimit} sent documents. It resets on a rolling 30-day basis.`
+            : `You've reached your free plan's limit of ${signLimit} documents sent for signature this month. Upgrade to PRO to send more.`,
+          403
+        );
+      }
+
       for (const r of recipients) {
         const token = generateSigningToken();
         tokens.set(r.id, token);
