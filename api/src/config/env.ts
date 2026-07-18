@@ -21,9 +21,14 @@ const envSchema = z.object({
   BCRYPT_ROUNDS: z.coerce.number().min(10).max(15).default(12),
 
   // Comma-separated list of allowed browser origins for CORS
-  CORS_ORIGINS: z.string().default('http://localhost:5173,http://localhost:5000'),
+  CORS_ORIGINS: z.string().default('http://localhost:5174,http://localhost:5000'),
   // Max JSON request body size (protects against large-payload DoS)
   MAX_JSON_BODY: z.string().default('100kb'),
+  // Max JSON body for the signing router only. A field-designer save posts the
+  // document's whole field set at once, which legitimately exceeds the 100kb
+  // global cap (SIGNING_LIMITS.maxFieldsPerDocument is 500). Kept as a separate
+  // knob so raising it doesn't widen the DoS surface on every other endpoint.
+  SIGNING_MAX_JSON_BODY: z.string().default('2mb'),
   // TTL (seconds) for signed download URLs handed to the job owner
   DOWNLOAD_URL_TTL: z.coerce.number().default(300),
   // How long a job's files are retained before the cleanup sweep removes them
@@ -43,6 +48,46 @@ const envSchema = z.object({
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+
+  // --- Email (SMTP) ---
+  // Carries signing invitations and OTPs. All optional so the API still boots
+  // without them; the mailer reports itself unconfigured and the send endpoint
+  // fails loudly rather than the app dying at startup on a missing secret.
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(465),
+  // true = implicit TLS (465). false = STARTTLS (587). Never plaintext:
+  // these messages carry signing links, which are bearer credentials.
+  SMTP_SECURE: z.coerce.boolean().default(true),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  // Envelope From. Note Gmail IGNORES this and rewrites it to SMTP_USER unless
+  // the address is a verified "send as" alias on that account.
+  SMTP_FROM: z.string().optional(),
+
+  // Public base URL of the FRONTEND, used to build signing links
+  // (`${APP_URL}/sign/<token>`). Must be the address recipients can actually
+  // reach — defaulting to localhost in production would mail out dead links.
+  APP_URL: z.string().url().default('http://localhost:5174'),
+
+  // --- Digital signature (PAdES/PKCS#7) ---
+  // The signing certificate applied to the finished PDF so any later edit
+  // breaks the signature (tamper-evidence) in Adobe / any PDF reader.
+  //   - Production: supply a real cert as base64-encoded PKCS#12 in
+  //     SIGNING_P12_BASE64 (+ its passphrase). An AATL-chained cert shows a
+  //     green check in Adobe; anything else shows valid-but-untrusted.
+  //   - Dev / unset: a self-signed cert is generated once and cached at
+  //     SIGNING_CERT_PATH, reused across restarts. Tamper-evidence still works;
+  //     readers just won't trust the (unknown) issuer.
+  SIGNING_P12_BASE64: z.string().optional(),
+  SIGNING_P12_PASSPHRASE: z.string().default(''),
+  SIGNING_CERT_PATH: z.string().default('./signing-cert.p12'),
+
+  // RFC 3161 Timestamp Authority. Stamps the final document's hash with an
+  // INDEPENDENT, verifiable time so the signing moment isn't only our word.
+  // Best-effort: if unreachable, the signature is still applied and the
+  // document's own completedAt stands. freetsa.org is a free public TSA.
+  TSA_URL: z.string().url().default('https://freetsa.org/tsr'),
+  TSA_ENABLED: z.coerce.boolean().default(true),
 });
 
 const parsed = envSchema.safeParse(process.env);

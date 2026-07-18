@@ -20,6 +20,28 @@ declare global {
   }
 }
 
+/**
+ * Blocks guest sessions from a route. Must run after authMiddleware.
+ *
+ * Guest rows are provisioned on demand and are throwaway by design (see
+ * authService.guest). That is fine for a one-shot tool run, but a signing
+ * document is a durable, identity-bearing legal artifact: it names its owner in
+ * the audit trail, outlives the session by months, and would be orphaned the
+ * moment guest cleanup removes the user row (ownerId cascades). Requiring a
+ * real account keeps agreements attributable to someone who can be contacted.
+ */
+export const requireFullAccount = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  if (req.user?.isGuest) {
+    next(new AppError('Please create an account to use document signing.', 403));
+    return;
+  }
+  next();
+};
+
 export const authMiddleware = async (
   req: Request,
   res: Response,

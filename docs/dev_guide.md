@@ -56,6 +56,22 @@ Stores active Razorpay checkout subscription logs.
 * `status` (VARCHAR(100)): Subscription status from webhooks (e.g. `'active'`, `'cancelled'`).
 * `currentPeriodEnd` (DATETIME, Nullable): Current billing cycle end date.
 
+### E-Signature Schema (`tbl_sign_*`)
+
+The signing module adds its own tables, created by [api/src/lib/signingSchema.ts](file:///d:/Arun%20sir%20Projects/PDFPRODUCT/backend/api/src/lib/signingSchema.ts) during the same boot-time DDL pass.
+
+> **Retention — read this before touching cleanup.** These tables are deliberately separate from `tbl_job`. `cleanupService.cleanupExpiredJobs` deletes rows and S3 objects once `tbl_job.expiresAt` passes, which is right for throwaway tool runs and catastrophic for signed agreements. Signing objects live under their own `pdf-saas-signing/` prefix and are only removed when the owner explicitly deletes the document. **Never route a signing document through `tbl_job`.**
+>
+> `tbl_sign_document.expiresAt` is a *business* deadline (the invitation lapses → status `EXPIRED`). It is **not** a storage-deletion trigger.
+
+* `tbl_sign_document` — one row per agreement. `fileKey` points at the original upload and is never overwritten. Status: `DRAFT → SENT → COMPLETED | DECLINED | EXPIRED | VOIDED`.
+* `tbl_sign_document_version` — immutable snapshots. v1 is the original; each finalization appends a row with a `sha256` of the exact stored bytes (tamper detection).
+* `tbl_sign_recipient` — signers. `signingToken` is the bearer secret in the signing link (UNIQUE, indexed); `accessCodeHash` is bcrypt. **Neither is ever returned by the owner-facing API** — see `toRecipientDTO`.
+* `tbl_sign_field` — placed fields. Geometry is stored as page-relative **fractions (0..1)**, not pixels, so placement is identical at any zoom and maps directly onto pdf-lib's point space at finalization. `y` runs from the top edge (screen coords); pdf-lib flips it. `recipientId` is `ON DELETE SET NULL`, so removing a recipient orphans their fields rather than destroying placement work.
+* `tbl_sign_audit` — append-only. The service layer exposes no update or delete path. `recipientId` is a plain column, not an FK, so the trail survives recipient removal.
+
+Structural edits (recipients, field placement) are rejected with a 409 once a document leaves `DRAFT` — moving a field under someone who already signed would silently alter the agreement. Cosmetic edits (title, message) remain allowed.
+
 ---
 
 ## 3. Asynchronous Queue Processing
@@ -76,6 +92,11 @@ To ensure that objects in the Space remain organized, descriptive, and easily un
 2. **Processed Results**:
    - Path format: `pdf-saas-results/job-${jobId}/${toolName}_${timestamp}.${extension}`
    - *Example*: `pdf-saas-results/job-mock-job-id/merged_1719744300000.pdf`
+3. **Signing Documents** (durable — never swept by the cleanup job):
+   - Path format: `pdf-saas-signing/user-${userId}/doc-${documentId}/original_${sanitizedFileName}`
+   - *Example*: `pdf-saas-signing/user-abc123/doc-def456/original_nda.pdf`
+
+> **Bucket CORS**: the signing PDF viewer streams bytes directly from Spaces using a presigned URL, so PDF.js issues cross-origin ranged `GET`s from the browser. The bucket needs a CORS rule allowing `GET` (with the `Range` header) from each frontend origin listed in `CORS_ORIGINS`. Without it the viewer fails with an opaque network error while `curl` on the same URL works fine.
 
 ---
 

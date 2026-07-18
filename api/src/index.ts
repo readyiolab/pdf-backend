@@ -8,6 +8,8 @@ import { logger } from './lib/logger';
 import apiRouter from './routes';
 import healthRoutes from './modules/health/health.routes';
 import webhookRoutes from './modules/webhooks/webhooks.routes';
+import signingRoutes from './modules/signing/signing.routes';
+import publicSigningRoutes from './modules/signing/public.routes';
 import { rateLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler } from './middleware/errorHandler.middleware';
 import { createDashboard } from './lib/bullBoard';
@@ -60,10 +62,8 @@ app.use(
   })
 );
 
-// Parse JSON bodies with a strict size limit (large-payload DoS protection)
-app.use(express.json({ limit: env.MAX_JSON_BODY }));
-
-// Request logging
+// Request logging. Mounted BEFORE the body parsers so that every route below —
+// including the signing router with its own parser — is logged.
 app.use(
   pinoHttp({
     logger,
@@ -72,6 +72,31 @@ app.use(
     },
   })
 );
+
+// The signing router parses its own body with a larger limit
+// (SIGNING_MAX_JSON_BODY): the field designer saves a document's entire field
+// set in one PUT, which exceeds the 100kb global cap. It must be mounted before
+// the global parser below, otherwise that parser would 413 the request first.
+app.use(
+  '/api/documents',
+  rateLimiter,
+  express.json({ limit: env.SIGNING_MAX_JSON_BODY }),
+  signingRoutes
+);
+
+// Public signing routes. Same larger body limit — a submission carries drawn
+// signatures as base64 PNGs, which blow past the 100kb global cap. No general
+// rateLimiter here: public.routes.ts applies its own tighter, purpose-built
+// limiters, and stacking the general one would let ordinary browsing on the
+// same IP exhaust a signer's budget mid-signature.
+app.use(
+  '/api/sign',
+  express.json({ limit: env.SIGNING_MAX_JSON_BODY }),
+  publicSigningRoutes
+);
+
+// Parse JSON bodies with a strict size limit (large-payload DoS protection)
+app.use(express.json({ limit: env.MAX_JSON_BODY }));
 
 import path from 'path';
 

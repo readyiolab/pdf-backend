@@ -32,3 +32,7 @@ yarn-error.log*
 *.sln
 *.sw?
 .DS_Store
+
+# Self-signed document-signing certificate (generated, never commit)
+*.p12
+signing-cert.p12

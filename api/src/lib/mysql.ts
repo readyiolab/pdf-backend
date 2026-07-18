@@ -1,6 +1,8 @@
 import mysql from 'mysql2/promise';
 import { env } from '../config/env';
 import { logger } from './logger';
+import { ensureIndex } from './ddl';
+import { initializeSigningSchema } from './signingSchema';
 
 let pool: mysql.Pool | null = null;
 
@@ -102,6 +104,10 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
     await ensureIndex(conn, 'tbl_job', 'idx_job_user_created', 'userId, createdAt');
     await ensureIndex(conn, 'tbl_subscription', 'idx_sub_razorpay', 'razorpaySubId');
 
+    // Signing module tables (tbl_sign_*). Runs after tbl_user exists — the
+    // signing tables have a foreign key onto it.
+    await initializeSigningSchema(conn);
+
     logger.info('Prefixed database tables (tbl_) initialization complete.');
   } catch (err: any) {
     logger.error({ err }, 'Failed to initialize database tables with prefixes');
@@ -109,24 +115,4 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
   } finally {
     conn.release();
   }
-}
-
-/**
- * Creates an index only if it doesn't already exist. MySQL has no
- * "CREATE INDEX IF NOT EXISTS", so we check information_schema first.
- */
-async function ensureIndex(
-  conn: mysql.PoolConnection,
-  table: string,
-  indexName: string,
-  columns: string
-): Promise<void> {
-  const [rows]: any = await conn.query(
-    `SELECT COUNT(1) AS cnt FROM information_schema.statistics
-      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
-    [table, indexName]
-  );
-  if (rows[0]?.cnt > 0) return;
-  await conn.query(`CREATE INDEX ${indexName} ON ${table} (${columns})`);
-  logger.info({ table, indexName }, 'Created database index');
 }

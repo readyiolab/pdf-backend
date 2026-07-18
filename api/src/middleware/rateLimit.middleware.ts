@@ -46,6 +46,65 @@ export const authRateLimiter = rateLimit({
   },
 });
 
+/**
+ * Limiter for the signature designer's autosave path.
+ *
+ * The general limiter (300 per 15 min) is sized for human-paced navigation and
+ * would throttle a legitimate design session: the designer debounces saves but
+ * still fires one per edit burst, and dragging a dozen fields across pages can
+ * outpace 20 req/min. This is keyed per IP like the others and still bounded —
+ * it's a wider window for a known-chatty endpoint, not an exemption.
+ */
+export const designerRateLimiter = rateLimit({
+  ...common,
+  windowMs: 60 * 1000,
+  max: 90, // ~1.5 saves/s sustained
+  store: redisStore('rl:designer:'),
+  message: {
+    status: 'error',
+    message: 'Too many edits too quickly. Your work is saved — please slow down.',
+  },
+});
+
+/**
+ * Limiter for the public, unauthenticated signing routes.
+ *
+ * These are the only endpoints reachable with no account at all, and the token
+ * in the URL is a bearer credential to a legal document. The cap is sized for a
+ * human signing a document (open, verify, submit) rather than for someone
+ * walking the token space.
+ */
+export const signingRateLimiter = rateLimit({
+  ...common,
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  store: redisStore('rl:sign:'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+/**
+ * Deliberately tight limiter for OTP issue/verify.
+ *
+ * A 6-digit code is only a million possibilities. The per-recipient attempt
+ * counter in otpService is the primary defence, but it is keyed on the
+ * recipient — this one is keyed on IP, which also blunts someone spraying codes
+ * across many links, and stops OTP issuance being used to spam a victim's inbox
+ * (or burn the Gmail sending quota) on demand.
+ */
+export const otpRateLimiter = rateLimit({
+  ...common,
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  store: redisStore('rl:otp:'),
+  message: {
+    status: 'error',
+    message: 'Too many verification attempts. Please wait a few minutes.',
+  },
+});
+
 // Polling-friendly limiter for job status reads (called frequently by clients).
 export const pollRateLimiter = rateLimit({
   ...common,
