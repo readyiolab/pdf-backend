@@ -6,7 +6,9 @@ import type { MailMessage } from '../../lib/mailer';
  * Table-based layout with inline styles on purpose — this is not the place for
  * modern CSS. Outlook renders with Word's HTML engine (no flex, no grid, no
  * float), and Gmail strips <style> blocks in several clients. A layout that
- * looks right in a browser routinely collapses in a real inbox.
+ * looks right in a browser routinely collapses in a real inbox, so the visual
+ * polish here comes from spacing, type and colour on tables — the same toolkit
+ * transactional senders like Stripe and DigitalOcean use.
  *
  * Every message ships a plain-text alternative: a missing text/plain part is a
  * significant spam-score penalty, and these are already going out over a
@@ -14,6 +16,15 @@ import type { MailMessage } from '../../lib/mailer';
  */
 
 const BRAND = '#2563eb';
+const INK = '#0f172a';
+const BODY = '#334155';
+const MUTED = '#64748b';
+const FAINT = '#94a3b8';
+const LINE = '#e2e8f0';
+const CANVAS = '#f1f5f9';
+
+const FONT =
+  "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
 function escapeHtml(value: string): string {
   // Recipient names and document titles are user-supplied and land inside HTML
@@ -27,25 +38,66 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function layout(heading: string, bodyHtml: string): string {
+/**
+ * The shared shell: a light canvas, a single white card with a slim branded
+ * top rule, a header, the body, and a quiet footer. `preheader` is the snippet
+ * inboxes show next to the subject — hidden in the body but worth setting so the
+ * preview isn't a scrape of the first visible words.
+ */
+function layout(opts: { heading: string; preheader: string; bodyHtml: string }): string {
+  const { heading, preheader, bodyHtml } = opts;
   return `<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 12px;">
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+  </head>
+  <body style="margin:0;padding:0;background:${CANVAS};font-family:${FONT};-webkit-font-smoothing:antialiased;">
+    <span style="display:none!important;visibility:hidden;opacity:0;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(
+      preheader
+    )}</span>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${CANVAS};">
       <tr>
-        <td align="center">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:12px;border:1px solid #e2e8f0;">
+        <td align="center" style="padding:32px 12px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:540px;width:100%;">
+            <!-- brand -->
             <tr>
-              <td style="padding:28px 32px 8px;">
-                <p style="margin:0 0 4px;font-size:13px;font-weight:600;color:${BRAND};letter-spacing:.02em;">PDFProduct</p>
-                <h1 style="margin:0;font-size:20px;line-height:1.3;color:#0f172a;font-weight:600;">${heading}</h1>
+              <td style="padding:0 4px 16px;">
+                <table role="presentation" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="width:28px;height:28px;border-radius:7px;background:${BRAND};text-align:center;vertical-align:middle;font-size:15px;font-weight:700;color:#ffffff;font-family:${FONT};">P</td>
+                    <td style="padding-left:9px;font-size:15px;font-weight:600;color:${INK};font-family:${FONT};">PDFProduct</td>
+                  </tr>
+                </table>
               </td>
             </tr>
-            <tr><td style="padding:8px 32px 28px;">${bodyHtml}</td></tr>
+            <!-- card -->
+            <tr>
+              <td style="background:#ffffff;border:1px solid ${LINE};border-radius:14px;overflow:hidden;">
+                <div style="height:4px;background:${BRAND};font-size:0;line-height:0;">&nbsp;</div>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="padding:28px 34px 30px;">
+                      <h1 style="margin:0 0 4px;font-size:20px;line-height:1.35;color:${INK};font-weight:650;">${heading}</h1>
+                      ${bodyHtml}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <!-- footer -->
+            <tr>
+              <td style="padding:22px 8px 0;">
+                <p style="margin:0 0 4px;font-size:12px;line-height:1.6;color:${MUTED};font-family:${FONT};">
+                  Sent by <strong style="color:${BODY};">PDFProduct</strong> · secure document signing
+                </p>
+                <p style="margin:0;font-size:11px;line-height:1.6;color:${FAINT};font-family:${FONT};">
+                  You received this because someone used PDFProduct to send you a document. If it wasn't expected, you can safely ignore it.
+                </p>
+              </td>
+            </tr>
           </table>
-          <p style="margin:16px 0 0;font-size:11px;color:#94a3b8;">
-            Sent by PDFProduct. If you weren't expecting this, you can ignore it.
-          </p>
         </td>
       </tr>
     </table>
@@ -53,12 +105,28 @@ function layout(heading: string, bodyHtml: string): string {
 </html>`;
 }
 
+function paragraph(html: string, marginTop = 14): string {
+  return `<p style="margin:${marginTop}px 0 0;font-size:15px;line-height:1.65;color:${BODY};">${html}</p>`;
+}
+
 function button(url: string, label: string): string {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;">
+  // Bulletproof-ish button: the rounded background lives on the <a> so Outlook
+  // (which ignores padding on table cells inconsistently) still shows a filled
+  // pill rather than a bare link.
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 6px;">
     <tr>
-      <td style="border-radius:8px;background:${BRAND};">
-        <a href="${url}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;">${label}</a>
+      <td style="border-radius:9px;background:${BRAND};box-shadow:0 1px 2px rgba(37,99,235,.25);">
+        <a href="${url}" style="display:inline-block;padding:13px 28px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:9px;font-family:${FONT};">${label} &rarr;</a>
       </td>
+    </tr>
+  </table>`;
+}
+
+/** A quiet inset panel for supporting detail (a personal note, a fallback link). */
+function panel(html: string): string {
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0 0;">
+    <tr>
+      <td style="background:${CANVAS};border:1px solid ${LINE};border-radius:10px;padding:14px 16px;">${html}</td>
     </tr>
   </table>`;
 }
@@ -73,49 +141,54 @@ export function invitationEmail(params: {
 }): MailMessage {
   const { signerName, senderName, documentTitle, signUrl, message, expiresAt } = params;
   const expiryLine = expiresAt
-    ? `This link expires on ${expiresAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.`
+    ? `This link expires on <strong>${expiresAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>. `
     : '';
 
-  const html = layout(
-    `${escapeHtml(senderName)} has requested your signature`,
-    `
-      <p style="margin:12px 0 0;font-size:14px;line-height:1.6;color:#334155;">Hi ${escapeHtml(signerName)},</p>
-      <p style="margin:12px 0 0;font-size:14px;line-height:1.6;color:#334155;">
-        <strong>${escapeHtml(senderName)}</strong> has sent you
-        <strong>${escapeHtml(documentTitle)}</strong> to sign.
-      </p>
+  const html = layout({
+    heading: `${escapeHtml(senderName)} requested your signature`,
+    preheader: `${senderName} sent you "${documentTitle}" to review and sign.`,
+    bodyHtml: `
+      ${paragraph(`Hi ${escapeHtml(signerName)},`)}
+      ${paragraph(
+        `<strong style="color:${INK};">${escapeHtml(senderName)}</strong> has sent you <strong style="color:${INK};">${escapeHtml(
+          documentTitle
+        )}</strong> to review and sign. It only takes a minute — no account required.`
+      )}
       ${
         message
-          ? `<table role="presentation" width="100%" style="margin:16px 0 0;"><tr>
-               <td style="border-left:3px solid #e2e8f0;padding:4px 0 4px 12px;font-size:13px;line-height:1.6;color:#64748b;font-style:italic;">
-                 ${escapeHtml(message)}
-               </td></tr></table>`
+          ? panel(
+              `<p style="margin:0 0 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:${FAINT};">Message from ${escapeHtml(
+                senderName
+              )}</p><p style="margin:0;font-size:14px;line-height:1.6;color:${BODY};">${escapeHtml(message)}</p>`
+            )
           : ''
       }
       ${button(signUrl, 'Review & sign')}
-      <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">
-        ${expiryLine} You don't need an account — the link opens the document directly.
+      <p style="margin:14px 0 0;font-size:13px;line-height:1.65;color:${MUTED};">
+        ${expiryLine}Opening the link takes you straight to the document.
       </p>
-      <p style="margin:16px 0 0;font-size:11px;line-height:1.5;color:#94a3b8;word-break:break-all;">
-        If the button doesn't work, paste this into your browser:<br />${signUrl}
+      ${panel(
+        `<p style="margin:0 0 6px;font-size:12px;line-height:1.5;color:${MUTED};">Button not working? Paste this link into your browser:</p>
+         <p style="margin:0;font-size:12px;line-height:1.5;word-break:break-all;"><a href="${signUrl}" style="color:${BRAND};text-decoration:none;">${signUrl}</a></p>`
+      )}
+      <p style="margin:16px 0 0;font-size:12px;line-height:1.6;color:${FAINT};">
+        🔒 This link is personal to you. Please don't forward it — anyone who has it can open the document.
       </p>
-      <p style="margin:16px 0 0;font-size:11px;line-height:1.5;color:#94a3b8;">
-        This link is personal to you. Please don't forward it — anyone with it can open the document.
-      </p>
-    `
-  );
+    `,
+  });
 
   const text = [
     `Hi ${signerName},`,
     '',
-    `${senderName} has sent you "${documentTitle}" to sign.`,
-    message ? `\nMessage from ${senderName}: ${message}\n` : '',
-    `Review & sign: ${signUrl}`,
+    `${senderName} has sent you "${documentTitle}" to review and sign. No account is required.`,
+    message ? `\nMessage from ${senderName}:\n${message}\n` : '',
+    `Review & sign:`,
+    signUrl,
     '',
-    expiryLine,
-    "You don't need an account.",
-    '',
-    "This link is personal to you. Please don't forward it — anyone with it can open the document.",
+    expiresAt
+      ? `This link expires on ${expiresAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.`
+      : '',
+    "This link is personal to you. Please don't forward it — anyone who has it can open the document.",
   ]
     .filter(Boolean)
     .join('\n');
@@ -131,23 +204,28 @@ export function otpEmail(params: {
 }): Omit<MailMessage, 'to'> {
   const { name, code, documentTitle, ttlMinutes } = params;
 
-  const html = layout(
-    'Your verification code',
-    `
-      <p style="margin:12px 0 0;font-size:14px;line-height:1.6;color:#334155;">Hi ${escapeHtml(name)},</p>
-      <p style="margin:12px 0 0;font-size:14px;line-height:1.6;color:#334155;">
-        Use this code to verify your identity before signing
-        <strong>${escapeHtml(documentTitle)}</strong>:
+  const html = layout({
+    heading: 'Your verification code',
+    preheader: `${code} — your code to sign "${documentTitle}". Expires in ${ttlMinutes} minutes.`,
+    bodyHtml: `
+      ${paragraph(`Hi ${escapeHtml(name)},`)}
+      ${paragraph(
+        `Enter this code to verify your identity before signing <strong style="color:${INK};">${escapeHtml(
+          documentTitle
+        )}</strong>:`
+      )}
+      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:22px 0 6px;">
+        <tr>
+          <td style="background:${CANVAS};border:1px solid ${LINE};border-radius:12px;padding:16px 26px;font-size:34px;font-weight:700;letter-spacing:.3em;color:${INK};font-family:'SF Mono',Menlo,Consolas,monospace;">
+            ${escapeHtml(code)}
+          </td>
+        </tr>
+      </table>
+      <p style="margin:14px 0 0;font-size:13px;line-height:1.65;color:${MUTED};">
+        It expires in <strong>${ttlMinutes} minutes</strong>. If you didn't request this, someone may have your signing link — do not share this code with anyone.
       </p>
-      <p style="margin:20px 0;font-size:32px;font-weight:700;letter-spacing:.28em;color:#0f172a;font-family:'SF Mono',Menlo,Consolas,monospace;">
-        ${escapeHtml(code)}
-      </p>
-      <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">
-        It expires in ${ttlMinutes} minutes. If you didn't request this, someone may have your signing
-        link — do not share this code with anyone.
-      </p>
-    `
-  );
+    `,
+  });
 
   const text = [
     `Hi ${name},`,
@@ -168,24 +246,30 @@ export function completionEmail(params: {
 }): Omit<MailMessage, 'to'> {
   const { name, documentTitle, downloadUrl } = params;
 
-  const html = layout(
-    'Everyone has signed',
-    `
-      <p style="margin:12px 0 0;font-size:14px;line-height:1.6;color:#334155;">Hi ${escapeHtml(name)},</p>
-      <p style="margin:12px 0 0;font-size:14px;line-height:1.6;color:#334155;">
-        <strong>${escapeHtml(documentTitle)}</strong> has been signed by all parties. The completed
-        document and its audit certificate are ready.
-      </p>
+  const html = layout({
+    heading: 'Everyone has signed ✓',
+    preheader: `"${documentTitle}" is fully signed — download the completed document and certificate.`,
+    bodyHtml: `
+      ${paragraph(`Hi ${escapeHtml(name)},`)}
+      ${paragraph(
+        `<strong style="color:${INK};">${escapeHtml(
+          documentTitle
+        )}</strong> has been signed by everyone. The completed document and its audit certificate are ready to download.`
+      )}
       ${button(downloadUrl, 'Download signed document')}
-    `
-  );
+      <p style="margin:14px 0 0;font-size:13px;line-height:1.65;color:${MUTED};">
+        The download includes a Certificate of Completion recording who signed, when, and from where.
+      </p>
+    `,
+  });
 
   const text = [
     `Hi ${name},`,
     '',
-    `"${documentTitle}" has been signed by all parties.`,
+    `"${documentTitle}" has been signed by everyone.`,
     '',
-    `Download: ${downloadUrl}`,
+    `Download the completed document and certificate:`,
+    downloadUrl,
   ].join('\n');
 
   return { subject: `Completed: ${documentTitle}`, html, text };

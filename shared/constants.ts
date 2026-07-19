@@ -39,6 +39,16 @@ export interface PlanLimits {
    * These are the pricing knobs — change the numbers here, nothing else.
    */
   maxMonthlySigns: number;
+
+  /**
+   * AI requests (Chat/Summarize/Explain) allowed per rolling 30-day window.
+   *
+   * Separate from every other counter because each AI call costs real money at
+   * the model's per-token rate — this is the guardrail against a single user
+   * running up the Anthropic bill. Consumed per request. Same monthly cadence
+   * and mechanism as maxMonthlySigns.
+   */
+  maxMonthlyAiCredits: number;
 }
 
 export const PLAN_LIMITS: Record<'FREE' | 'PRO', PlanLimits> = {
@@ -46,11 +56,13 @@ export const PLAN_LIMITS: Record<'FREE' | 'PRO', PlanLimits> = {
     maxDailyOps: 5,
     maxFileSize: 10 * 1024 * 1024, // 10MB
     maxMonthlySigns: 3, // enough to try the feature; upgrade for real use
+    maxMonthlyAiCredits: 20, // a taste of AI; upgrade for real use
   },
   PRO: {
     maxDailyOps: 1000, // Practically unlimited compared to 5, but provides a safety guardrail
     maxFileSize: 100 * 1024 * 1024, // 100MB
     maxMonthlySigns: 200, // generous, but a guardrail against runaway email cost
+    maxMonthlyAiCredits: 500, // generous, but bounds runaway token spend
   },
 };
 

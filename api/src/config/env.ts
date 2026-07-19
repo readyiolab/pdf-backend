@@ -88,6 +88,26 @@ const envSchema = z.object({
   // document's own completedAt stands. freetsa.org is a free public TSA.
   TSA_URL: z.string().url().default('https://freetsa.org/tsr'),
   TSA_ENABLED: z.coerce.boolean().default(true),
+
+  // --- AI (OpenAI) ---
+  // Powers Chat/Summarize/Explain over PDFs. Optional so the API still boots
+  // without it; the AI service reports itself unconfigured and its endpoints
+  // fail loudly (503) rather than the app dying at startup. Every call costs
+  // money per token — quota is enforced separately (PLAN_LIMITS.maxMonthlyAiCredits).
+  //
+  // Provider-abstracted (see lib/ai/): AI_PROVIDER selects the backend. OpenAI
+  // is the active provider; a Claude provider can be added without touching the
+  // AI service. We extract the PDF's text server-side and send text, so this
+  // works with any OpenAI chat model regardless of file-input API support.
+  AI_PROVIDER: z.enum(['openai']).default('openai'),
+  OPENAI_API_KEY: z.string().optional(),
+  // Model id — set one your key has access to. gpt-4o-mini is the cheapest
+  // capable tier for high-volume PDF Q&A; swap here for more capability.
+  AI_MODEL: z.string().default('gpt-4o-mini'),
+  // Hard ceiling on extracted document text sent to the model (characters).
+  // ~4 chars/token, so 400k ≈ 100k tokens — within a 128k context with room
+  // for the answer, and a guard against a huge PDF blowing up cost.
+  AI_MAX_TEXT_CHARS: z.coerce.number().default(400_000),
 });
 
 const parsed = envSchema.safeParse(process.env);

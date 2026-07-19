@@ -58,6 +58,25 @@ class Layout {
     this.y -= opts.gap ?? 4;
   }
 
+  /**
+   * Draws a run of prose, wrapped to the page width. pdf-lib's drawText never
+   * wraps, so a long sentence handed to text() runs straight off the right
+   * margin and is clipped — which is exactly how the explanatory paragraphs used
+   * to lose their last few words. Everything narrative goes through here.
+   */
+  paragraph(
+    value: string,
+    opts: { size?: number; font?: PDFFont; color?: typeof INK; gap?: number; lineGap?: number } = {}
+  ): void {
+    const size = opts.size ?? 9;
+    const font = opts.font ?? this.fonts.regular;
+    const lines = wrap(value, font, size, PAGE_W - MARGIN * 2);
+    lines.forEach((line, i) => {
+      const last = i === lines.length - 1;
+      this.text(line, { size, font, color: opts.color, gap: last ? opts.gap ?? 6 : opts.lineGap ?? 3 });
+    });
+  }
+
   rule(gap = 10): void {
     this.ensure(gap);
     this.y -= gap / 2;
@@ -165,7 +184,7 @@ export const certificateService = {
     // ── Header ──
     L.text('PDFPRODUCT', { size: 8, font: fonts.bold, color: BRAND, gap: 6 });
     L.text('Certificate of Completion', { size: 20, font: fonts.bold, gap: 8 });
-    L.text(
+    L.paragraph(
       `This certificate records the electronic signature process for the document below, including who signed, when, and from where.`,
       { size: 9, color: MUTED, gap: 2 }
     );
@@ -189,7 +208,7 @@ export const certificateService = {
 
     // ── Integrity ──
     L.text('DOCUMENT INTEGRITY', { size: 8, font: fonts.bold, color: MUTED, gap: 8 });
-    L.text(
+    L.paragraph(
       'The SHA-256 fingerprint below was computed from the original document when it was uploaded, before any signature was applied. It proves the document presented to the signers is the one recorded here.',
       { size: 8, color: MUTED, gap: 2 }
     );
@@ -199,13 +218,13 @@ export const certificateService = {
       L.text(line, { size: 8, font: fonts.mono, color: BRAND, gap: 2 });
     }
     L.space(6);
-    L.text(
+    L.paragraph(
       'The completed document carries its own SHA-256, recorded against version ' +
         `${doc.currentVersion} at the time of sealing and available from the document's status record. It is not printed here because this certificate forms part of that file — a fingerprint cannot include itself.`,
-      { size: 8, color: MUTED, gap: 6 }
+      { size: 8, color: MUTED, gap: 8 }
     );
     L.text('Digital signature', { size: 8, font: fonts.bold, gap: 4 });
-    L.text(
+    L.paragraph(
       'After this certificate was attached, the whole document was sealed with a PKCS#7 digital signature. Any change to a single byte afterwards will cause a PDF reader to report the signature as invalid. The signing time was additionally submitted to an independent RFC 3161 timestamp authority, whose token is retained as third-party proof of when the document existed.',
       { size: 8, color: MUTED, gap: 2 }
     );

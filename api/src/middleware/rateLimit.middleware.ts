@@ -105,6 +105,24 @@ export const otpRateLimiter = rateLimit({
   },
 });
 
+/**
+ * Limiter for the AI endpoints.
+ *
+ * AI calls are slow (a model round trip) and each one costs money, so this is
+ * tighter than the general limiter — it caps burst abuse on top of the monthly
+ * credit quota, which is the real spend guardrail. Keyed per IP.
+ */
+export const aiRateLimiter = rateLimit({
+  ...common,
+  windowMs: 60 * 1000,
+  max: 10,
+  store: redisStore('rl:ai:'),
+  message: {
+    status: 'error',
+    message: 'Too many AI requests. Please wait a moment and try again.',
+  },
+});
+
 // Polling-friendly limiter for job status reads (called frequently by clients).
 export const pollRateLimiter = rateLimit({
   ...common,
