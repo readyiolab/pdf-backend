@@ -14,6 +14,7 @@ import { rateLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler } from './middleware/errorHandler.middleware';
 import { createDashboard } from './lib/bullBoard';
 import { createMysqlPool } from './lib/mysql';
+import { isMailerConfigured } from './lib/mailer';
 
 const app = express();
 
@@ -139,6 +140,16 @@ async function bootstrap() {
     // 2. Start HTTP Server
     const server = app.listen(env.PORT, () => {
       logger.info(`🚀 API Service running on port ${env.PORT} in ${env.NODE_ENV} mode`);
+      // Surface config state that silently degrades a feature rather than
+      // crashing boot — the #1 "works locally, broken in prod" cause is an env
+      // file on the server missing these. One glance at `pm2 logs` now answers
+      // "is email even configured?" without reproducing a failed send.
+      if (isMailerConfigured()) {
+        logger.info(`✉️  Email configured (SMTP host ${env.SMTP_HOST}, from ${env.SMTP_FROM || env.SMTP_USER})`);
+      } else {
+        logger.warn('✉️  Email NOT configured — signing invitations/OTPs will fail. Set SMTP_HOST/SMTP_USER/SMTP_PASS in this process\'s .env and restart.');
+      }
+      logger.info(`🔗 Signing links will point at APP_URL=${env.APP_URL}`);
       // NOTE: expired-file cleanup now runs in the worker as a BullMQ repeatable
       // job (distributed-safe, survives restarts) rather than a per-instance
       // setInterval here — otherwise every API replica would sweep in parallel.
