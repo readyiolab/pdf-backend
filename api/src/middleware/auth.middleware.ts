@@ -37,7 +37,7 @@ export const requireFullAccount = (
   next: NextFunction
 ): void => {
   if (req.user?.isGuest) {
-    next(new AppError('Please create an account to use document signing.', 403));
+    next(new AppError('Please create a free account to use this feature. Guest sessions are limited to basic PDF tools.', 403));
     return;
   }
   next();

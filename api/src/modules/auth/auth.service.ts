@@ -97,11 +97,10 @@ export const authService = {
       authProvider: 'password',
     });
 
-    try {
-      await sendVerificationEmail(normalizedEmail, name || null, verify.raw);
-    } catch (err) {
+    // Do not block the API response on SMTP — Gmail can take several seconds.
+    void sendVerificationEmail(normalizedEmail, name || null, verify.raw).catch((err) => {
       logger.error({ err, email: normalizedEmail }, 'Failed to send verification email');
-    }
+    });
 
     const token = signToken({ userId, email: normalizedEmail, plan: 'FREE' });
 
@@ -122,12 +121,22 @@ export const authService = {
 
     const user: any = await db.select(
       'tbl_user',
-      'id, email, passwordHash, name, plan, emailVerified',
+      'id, email, passwordHash, name, plan, emailVerified, authProvider',
       'email = ?',
       [email.toLowerCase()]
     );
 
     if (!user) {
+      throw new AppError('Invalid email or password', 401);
+    }
+
+    // Guest / Google accounts are not password-loginable (no expensive bcrypt).
+    if (
+      !user.passwordHash ||
+      !String(user.passwordHash).startsWith('$2') ||
+      user.authProvider === 'guest' ||
+      user.authProvider === 'google'
+    ) {
       throw new AppError('Invalid email or password', 401);
     }
 
@@ -152,12 +161,12 @@ export const authService = {
   async guest(): Promise<AuthResponse> {
     const userId = crypto.randomUUID();
     const email = `guest-${userId}@guest.local`;
-    const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), env.BCRYPT_ROUNDS);
 
     await db.insert('tbl_user', {
       id: userId,
       email,
-      passwordHash,
+      // Unusable marker — guests never sign in with a password (avoids bcrypt cost).
+      passwordHash: '!guest',
       name: 'Guest',
       plan: 'FREE',
       emailVerified: 1,
@@ -233,16 +242,13 @@ export const authService = {
 
     if (!user) {
       const userId = crypto.randomUUID();
-      const randomPasswordHash = await bcrypt.hash(
-        crypto.randomBytes(32).toString('hex'),
-        env.BCRYPT_ROUNDS
-      );
       const userName = name || normalizedEmail.split('@')[0];
 
       await db.insert('tbl_user', {
         id: userId,
         email: normalizedEmail,
-        passwordHash: randomPasswordHash,
+        // Unusable — Google accounts sign in via ID token, not password.
+        passwordHash: '!google',
         name: userName,
         plan: 'FREE',
         emailVerified: 1,
@@ -334,7 +340,10 @@ export const authService = {
       [user.id]
     );
 
-    await sendVerificationEmail(user.email, user.name, verify.raw);
+    // Return immediately — SMTP latency must not block the client (15s browser timeout).
+    void sendVerificationEmail(user.email, user.name, verify.raw).catch((err) => {
+      logger.error({ err, email: user.email }, 'Failed to resend verification email');
+    });
     return { sent: true };
   },
 };

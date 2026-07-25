@@ -511,7 +511,7 @@ export const signingService = {
     const signingOrder =
       input.signingOrder ?? Math.max(0, ...existing.map((r: any) => r.signingOrder)) + 1;
     const accessCodeHash = input.accessCode
-      ? await bcrypt.hash(input.accessCode, env.BCRYPT_ROUNDS)
+      ? await bcrypt.hash(input.accessCode, env.BCRYPT_OTP_ROUNDS)
       : null;
 
     await db.insert('tbl_sign_recipient', {
@@ -589,7 +589,7 @@ export const signingService = {
     }
     if (input.accessCode !== undefined) {
       sets.push('accessCodeHash = ?');
-      params.push(await bcrypt.hash(input.accessCode, env.BCRYPT_ROUNDS));
+      params.push(await bcrypt.hash(input.accessCode, env.BCRYPT_OTP_ROUNDS));
     }
 
     await db.execute(

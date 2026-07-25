@@ -10,6 +10,9 @@ import { logger } from './logger';
  */
 let transporter: Transporter | null = null;
 
+/** Fail fast rather than letting the API / browser hang on a stuck SMTP socket. */
+const SMTP_TIMEOUT_MS = 10_000;
+
 export function isMailerConfigured(): boolean {
   return Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
 }
@@ -31,11 +34,11 @@ function getTransporter(): Transporter {
     secure: env.SMTP_SECURE,
     auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
     pool: true,
-    // Gmail throttles aggressively and will start deferring on burst sends.
-    // Keeping concurrency low is cheaper than getting the account rate-limited
-    // mid-send and having half a document's recipients never receive a link.
     maxConnections: 3,
     maxMessages: 50,
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS,
   });
 
   return transporter;

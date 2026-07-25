@@ -17,8 +17,10 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('7d'),
   GUEST_JWT_EXPIRES_IN: z.string().default('24h'),
-  // bcrypt cost factor (higher = slower/safer). 12 is a good production default.
-  BCRYPT_ROUNDS: z.coerce.number().min(10).max(15).default(12),
+  // bcrypt cost for user passwords (10 ≈ 100ms; 12 can feel sluggish on register/login).
+  BCRYPT_ROUNDS: z.coerce.number().min(10).max(15).default(10),
+  // Cheaper cost for short-lived OTP / access-code hashes (not long-lived passwords).
+  BCRYPT_OTP_ROUNDS: z.coerce.number().min(4).max(10).default(6),
 
   // Comma-separated list of allowed browser origins for CORS
   CORS_ORIGINS: z.string().default('http://localhost:5173,http://localhost:5174,http://localhost:3000,http://localhost:5000,http://127.0.0.1:5173'),

@@ -44,7 +44,7 @@ export const otpService = {
     }
 
     const code = generateCode();
-    const codeHash = await bcrypt.hash(code, env.BCRYPT_ROUNDS);
+    const codeHash = await bcrypt.hash(code, env.BCRYPT_OTP_ROUNDS);
     const expiresAt = new Date(Date.now() + OTP_TTL_MS);
 
     await db.update(
