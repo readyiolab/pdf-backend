@@ -47,21 +47,35 @@ export const errorHandler = (
     });
   }
 
-  // Redis/queue outage (e.g. connection down, or provider quota exceeded like
-  // Upstash's "max requests limit exceeded"). Surfaced as a distinct 503 so
-  // clients can retry instead of treating it as an opaque server bug.
+  // Redis/queue outage (e.g. Upstash quota). Do NOT treat generic ETIMEDOUT /
+  // ECONNREFUSED as Redis — those also come from SMTP and would mis-label mail failures.
   const errName = (err as { name?: string }).name;
-  const errCode = (err as { code?: string }).code;
-  if (
+  const errMsg = err.message || '';
+  const isRedis =
     errName === 'ReplyError' ||
     errName === 'MaxRetriesPerRequestError' ||
-    errCode === 'ECONNREFUSED' ||
-    errCode === 'ETIMEDOUT'
-  ) {
+    /ioredis|RedisClient|max requests limit/i.test(`${errName} ${errMsg} ${err.stack || ''}`);
+
+  if (isRedis) {
     logger.error({ err, url: req.url, method: req.method }, 'Redis unavailable');
     return res.status(503).json({
       status: 'error',
       message: 'Service temporarily unavailable. Please try again in a few minutes.',
+    });
+  }
+
+  // SMTP / outbound mail failures (nodemailer uses code ETIMEDOUT + command CONN)
+  const errCode = (err as { code?: string; command?: string }).code;
+  const errCommand = (err as { command?: string }).command;
+  if (
+    errCommand === 'CONN' ||
+    /smtp|nodemailer|connection timeout/i.test(`${errMsg} ${err.stack || ''}`) ||
+    (errCode === 'ETIMEDOUT' && /smtp/i.test(err.stack || ''))
+  ) {
+    logger.error({ err, url: req.url, method: req.method }, 'Email send failed');
+    return res.status(503).json({
+      status: 'error',
+      message: 'Email service is temporarily unavailable. Please try again shortly.',
     });
   }
 

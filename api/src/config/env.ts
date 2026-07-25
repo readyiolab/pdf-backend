@@ -56,14 +56,12 @@ const envSchema = z.object({
   // without them; the mailer reports itself unconfigured and the send endpoint
   // fails loudly rather than the app dying at startup on a missing secret.
   SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().default(465),
-  // true = implicit TLS (465). false = STARTTLS (587). Never plaintext:
-  // these messages carry signing links, which are bearer credentials.
-  SMTP_SECURE: z.coerce.boolean().default(true),
+  // 587 + STARTTLS is more reliable from cloud VMs (e.g. DigitalOcean) than 465.
+  SMTP_PORT: z.coerce.number().default(587),
+  // true = implicit TLS (465). false = STARTTLS (587).
+  SMTP_SECURE: z.coerce.boolean().default(false),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  // Envelope From. Note Gmail IGNORES this and rewrites it to SMTP_USER unless
-  // the address is a verified "send as" alias on that account.
   SMTP_FROM: z.string().optional(),
 
   // Public base URL of the FRONTEND, used to build signing links
