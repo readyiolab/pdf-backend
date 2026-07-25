@@ -28,6 +28,13 @@ function resetTransporter(): void {
   transporter = null;
 }
 
+function resolveSmtpSecure(port: number, configured: boolean): boolean {
+  // Port 465 = implicit TLS. 587/2525/25 = plain then STARTTLS.
+  if (port === 465) return true;
+  if (port === 587 || port === 2525 || port === 25 || port === 8025) return false;
+  return configured;
+}
+
 function getTransporter(): Transporter {
   if (transporter) return transporter;
 
@@ -35,11 +42,18 @@ function getTransporter(): Transporter {
     throw new Error('SMTP is not configured (SMTP_HOST/SMTP_USER/SMTP_PASS)');
   }
 
-  // Prefer STARTTLS on 587 from cloud VMs (DigitalOcean often struggles with 465).
+  const port = env.SMTP_PORT;
+  const secure = resolveSmtpSecure(port, env.SMTP_SECURE);
+
+  logger.info(
+    { host: env.SMTP_HOST, port, secure },
+    'Creating SMTP transport'
+  );
+
   transporter = nodemailer.createTransport({
     host: env.SMTP_HOST,
-    port: env.SMTP_PORT,
-    secure: env.SMTP_SECURE,
+    port,
+    secure,
     auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
     pool: true,
     maxConnections: 2,
@@ -47,8 +61,9 @@ function getTransporter(): Transporter {
     connectionTimeout: SMTP_TIMEOUT_MS,
     greetingTimeout: SMTP_TIMEOUT_MS,
     socketTimeout: SMTP_TIMEOUT_MS,
+    // Submission ports speak plain SMTP first, then upgrade via STARTTLS.
+    requireTLS: !secure,
     tls: {
-      // Gmail / most providers; keep hostname verification on.
       servername: env.SMTP_HOST,
       minVersion: 'TLSv1.2',
     },

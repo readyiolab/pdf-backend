@@ -4,6 +4,21 @@ import { z } from 'zod';
 // Load environment variables from .env
 dotenv.config();
 
+/**
+ * Env vars are always strings. z.coerce.boolean() wrongly turns "false" → true
+ * (Boolean("false") === true). Parse true/false/1/0/yes/no properly.
+ */
+const envBool = (defaultValue: boolean) =>
+  z.preprocess((val) => {
+    if (val === undefined || val === null || val === '') return defaultValue;
+    if (typeof val === 'boolean') return val;
+    if (typeof val === 'number') return val !== 0;
+    const s = String(val).trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(s)) return true;
+    if (['false', '0', 'no', 'off'].includes(s)) return false;
+    return defaultValue;
+  }, z.boolean());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(5000),
@@ -59,7 +74,8 @@ const envSchema = z.object({
   // SMTP2GO often uses 2525; Gmail/others use 587 (STARTTLS) or 465 (TLS).
   SMTP_PORT: z.coerce.number().default(2525),
   // true = implicit TLS (465). false = STARTTLS / submission (587, 2525).
-  SMTP_SECURE: z.coerce.boolean().default(false),
+  // IMPORTANT: do not use z.coerce.boolean() — "false" would become true.
+  SMTP_SECURE: envBool(false),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   // Prefer SMTP_FROM; SMTP_FROM_EMAIL is accepted as an alias (common in other apps).
@@ -96,7 +112,7 @@ const envSchema = z.object({
   // Best-effort: if unreachable, the signature is still applied and the
   // document's own completedAt stands. freetsa.org is a free public TSA.
   TSA_URL: z.string().url().default('https://freetsa.org/tsr'),
-  TSA_ENABLED: z.coerce.boolean().default(true),
+  TSA_ENABLED: envBool(true),
 
   // --- AI (OpenAI) ---
   // Powers Chat/Summarize/Explain over PDFs. Optional so the API still boots
