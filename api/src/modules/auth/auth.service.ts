@@ -58,15 +58,19 @@ function toAuthUser(row: {
   email: string;
   name: string | null;
   plan: string;
-  emailVerified?: number | boolean;
+  emailVerified?: number | boolean | string;
   isGuest?: boolean;
 }): AuthResponse['user'] {
+  const verified =
+    row.emailVerified === true ||
+    row.emailVerified === 1 ||
+    row.emailVerified === '1';
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     plan: (row.plan as 'FREE' | 'PRO') || 'FREE',
-    emailVerified: Boolean(row.emailVerified),
+    emailVerified: verified,
     ...(row.isGuest ? { isGuest: true } : {}),
   };
 }
@@ -311,6 +315,7 @@ export const authService = {
       'id = ?',
       [user.id]
     );
+    // Drop stale auth cache so the next request sees emailVerified=true immediately.
     await invalidateUser(user.id).catch(() => undefined);
 
     const token = signToken({ userId: user.id, email: user.email, plan: user.plan });

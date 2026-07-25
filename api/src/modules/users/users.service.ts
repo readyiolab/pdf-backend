@@ -2,6 +2,17 @@ import { db } from '../../lib/mysql';
 import { PLAN_LIMITS } from '../../../../shared/constants';
 import { AppError } from '../../middleware/errorHandler.middleware';
 
+/** MySQL TINYINT / Buffer / "0"|"1" → real boolean. */
+function asBool(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value == null) return false;
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) {
+    return value.length > 0 && value[0] !== 0;
+  }
+  const s = String(value).trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes';
+}
+
 export const usersService = {
   async getUserProfile(userId: string) {
     const user = await db.select(
@@ -25,7 +36,7 @@ export const usersService = {
       email: user.email,
       name: user.name,
       plan: user.plan,
-      emailVerified: Boolean(user.emailVerified),
+      emailVerified: asBool(user.emailVerified),
       authProvider: user.authProvider || 'password',
       dailyOpsUsed: user.dailyOpsUsed,
       dailyOpsLimit: limits.maxDailyOps,

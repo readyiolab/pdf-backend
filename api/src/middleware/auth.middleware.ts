@@ -106,10 +106,20 @@ export const authMiddleware = async (
       if (!user) {
         throw new AppError('The user belonging to this token no longer exists', 401);
       }
+      const rawVerified = user.emailVerified as unknown;
+      const emailVerified =
+        rawVerified === true ||
+        rawVerified === 1 ||
+        rawVerified === '1' ||
+        (typeof Buffer !== 'undefined' &&
+          Buffer.isBuffer(rawVerified) &&
+          rawVerified.length > 0 &&
+          rawVerified[0] !== 0);
+
       cached = {
         id: user.id,
         plan: user.plan as 'FREE' | 'PRO',
-        emailVerified: Boolean(user.emailVerified),
+        emailVerified,
       };
       try {
         await setCachedUser(cached);
