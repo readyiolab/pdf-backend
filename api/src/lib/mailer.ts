@@ -77,7 +77,7 @@ export interface MailResult {
 export async function sendMail(message: MailMessage): Promise<MailResult> {
   try {
     const info = await getTransporter().sendMail({
-      from: env.SMTP_FROM || env.SMTP_USER,
+      from: env.SMTP_FROM || env.ADMIN_EMAIL || env.SMTP_USER,
       to: message.to,
       subject: message.subject,
       text: message.text,

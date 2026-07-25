@@ -56,13 +56,18 @@ const envSchema = z.object({
   // without them; the mailer reports itself unconfigured and the send endpoint
   // fails loudly rather than the app dying at startup on a missing secret.
   SMTP_HOST: z.string().optional(),
-  // 587 + STARTTLS is more reliable from cloud VMs (e.g. DigitalOcean) than 465.
-  SMTP_PORT: z.coerce.number().default(587),
-  // true = implicit TLS (465). false = STARTTLS (587).
+  // SMTP2GO often uses 2525; Gmail/others use 587 (STARTTLS) or 465 (TLS).
+  SMTP_PORT: z.coerce.number().default(2525),
+  // true = implicit TLS (465). false = STARTTLS / submission (587, 2525).
   SMTP_SECURE: z.coerce.boolean().default(false),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  SMTP_FROM: z.string().optional(),
+  // Prefer SMTP_FROM; SMTP_FROM_EMAIL is accepted as an alias (common in other apps).
+  SMTP_FROM: z.preprocess(
+    (v) => (typeof v === 'string' && v.length > 0 ? v : process.env.SMTP_FROM_EMAIL),
+    z.string().optional()
+  ),
+  ADMIN_EMAIL: z.string().email().optional(),
 
   // Public base URL of the FRONTEND, used to build signing links
   // (`${APP_URL}/sign/<token>`). Must be the address recipients can actually
