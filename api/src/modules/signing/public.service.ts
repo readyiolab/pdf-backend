@@ -101,7 +101,7 @@ async function assertTurn(document: any, recipient: any): Promise<void> {
         AND role IN ('SIGNER', 'APPROVER')
         AND signingOrder < ?
         AND status <> 'COMPLETED'`,
-    [document.id, recipient.signingOrder]
+    [document.id, Number(recipient.signingOrder)]
   );
   if (ahead > 0) {
     throw new AppError(
@@ -571,17 +571,29 @@ async function notifyNextSigner(document: any, req: Request): Promise<void> {
     expiresAt: next.tokenExpiresAt ? new Date(next.tokenExpiresAt) : null,
   });
 
-  await sendMail({ ...mail, to: next.email });
-  await db.update('tbl_sign_recipient', { status: 'SENT' }, 'id = ?', [next.id]);
+  try {
+    const info = await sendMail({ ...mail, to: next.email });
+    await db.update('tbl_sign_recipient', { status: 'SENT' }, 'id = ?', [next.id]);
+    logger.info(
+      { recipientId: next.id, documentId: document.id, to: next.email, messageId: info.messageId },
+      'Next-signer invitation sent'
+    );
 
-  await auditService.record(req, {
-    documentId: document.id,
-    recipientId: next.id,
-    actorEmail: next.email,
-    actorName: next.name,
-    action: 'EMAIL_SENT',
-    detail: `Signing invitation sent to ${next.name} (next in order)`,
-  });
+    await auditService.record(req, {
+      documentId: document.id,
+      recipientId: next.id,
+      actorEmail: next.email,
+      actorName: next.name,
+      action: 'EMAIL_SENT',
+      detail: `Signing invitation sent to ${next.name} (next in order)`,
+    });
+  } catch (err) {
+    logger.error(
+      { err, recipientId: next.id, documentId: document.id, to: next.email },
+      'Failed to notify the next signer'
+    );
+    throw err;
+  }
 }
 
 /**

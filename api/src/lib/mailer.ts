@@ -11,7 +11,7 @@ import { logger } from './logger';
 let transporter: Transporter | null = null;
 
 /** Fail fast rather than letting the API / browser hang on a stuck SMTP socket. */
-const SMTP_TIMEOUT_MS = 8_000;
+const SMTP_TIMEOUT_MS = 15_000;
 
 export function isMailerConfigured(): boolean {
   return Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
@@ -98,6 +98,18 @@ export async function sendMail(message: MailMessage): Promise<MailResult> {
       text: message.text,
       html: message.html,
     });
+
+    logger.info(
+      {
+        to: message.to,
+        subject: message.subject,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      },
+      'SMTP message accepted'
+    );
 
     return {
       messageId: info.messageId,

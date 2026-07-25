@@ -169,13 +169,36 @@ export const sendService = {
     // emailed as each one completes. In a parallel flow everyone goes at once.
     // VIEWER/CC are notified immediately in both cases — they aren't in the
     // signing chain, so there is nothing for them to wait for.
-    const firstOrder = Math.min(...signers.map((r: any) => r.signingOrder));
+    // Coerce signingOrder: mysql2 usually returns INT as number, but drivers /
+    // serializers can yield strings — strict === would skip every signer and
+    // send zero invitation emails.
+    const firstOrder = Math.min(...signers.map((r: any) => Number(r.signingOrder)));
     const toNotify =
       doc.flowType === 'SEQUENTIAL'
-        ? recipients.filter((r: any) => !ACTIONABLE_ROLES.has(r.role) || r.signingOrder === firstOrder)
+        ? recipients.filter(
+            (r: any) => !ACTIONABLE_ROLES.has(r.role) || Number(r.signingOrder) === firstOrder
+          )
         : recipients;
 
     const notified = await deliverInvitations(toNotify, tokens, doc, senderName, expiresAt);
+
+    // Document + tokens are already committed. If every invite bounced, undo the
+    // send so the owner can fix SMTP / the address and try again — otherwise the
+    // UI says "Sent" while nobody can open a link from their inbox.
+    const actionableNotified = notified.filter((n) =>
+      toNotify.some((r: any) => r.id === n.recipientId && ACTIONABLE_ROLES.has(r.role))
+    );
+    if (
+      actionableNotified.length > 0 &&
+      actionableNotified.every((n) => !n.delivered)
+    ) {
+      await revertFailedSend(documentId, userId);
+      const reason = actionableNotified[0]?.error || 'SMTP delivery failed';
+      throw new AppError(
+        `Couldn't deliver the signing invitation email (${reason}). Check your email settings and try again.`,
+        503
+      );
+    }
 
     return { documentId, status: 'SENT', notified };
   },
@@ -331,10 +354,9 @@ export const sendService = {
 /**
  * Emails invitations.
  *
- * Delivery failures are collected, NOT thrown. The document is already SENT and
- * the tokens are already committed at this point; throwing would leave the
- * caller thinking nothing happened while some recipients had already been
- * emailed. The per-recipient result tells the sender exactly who to chase.
+ * Per-recipient delivery failures are collected (not thrown mid-loop) so a
+ * parallel send can still reach some inboxes. The caller decides whether a
+ * total failure should roll the document back to DRAFT.
  */
 async function deliverInvitations(
   recipients: any[],
@@ -359,17 +381,75 @@ async function deliverInvitations(
       });
 
       try {
-        await sendMail({ ...mail, to: r.email });
+        const info = await sendMail({ ...mail, to: r.email });
         await db.update('tbl_sign_recipient', { status: 'SENT' }, 'id = ?', [r.id]);
-        logger.info({ recipientId: r.id, documentId: doc.id }, 'Signing invitation sent');
+        logger.info(
+          {
+            recipientId: r.id,
+            documentId: doc.id,
+            to: r.email,
+            messageId: info.messageId,
+            accepted: info.accepted,
+            rejected: info.rejected,
+          },
+          'Signing invitation sent'
+        );
+        if (info.rejected.length > 0 && info.accepted.length === 0) {
+          return {
+            recipientId: r.id,
+            email: r.email,
+            delivered: false,
+            error: `Rejected by mail server: ${info.rejected.join(', ')}`,
+          };
+        }
         return { recipientId: r.id, email: r.email, delivered: true };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Delivery failed';
-        logger.error({ err, recipientId: r.id, documentId: doc.id }, 'Failed to send signing invitation');
+        logger.error(
+          { err, recipientId: r.id, documentId: doc.id, to: r.email },
+          'Failed to send signing invitation'
+        );
         return { recipientId: r.id, email: r.email, delivered: false, error: message };
       }
     })
   );
 
   return results.filter((res): res is NonNullable<typeof res> => res !== null);
+}
+
+/**
+ * Rolls back a send when every actionable invitation failed to leave the
+ * server. Refunds the monthly signing credit reserved in the send transaction.
+ */
+async function revertFailedSend(documentId: string, userId: string): Promise<void> {
+  const conn = await db.beginTransaction();
+  try {
+    await conn.query(
+      `UPDATE tbl_sign_document
+          SET status = 'DRAFT', sentAt = NULL, expiresAt = NULL
+        WHERE id = ? AND status = 'SENT'`,
+      [documentId]
+    );
+    await conn.query(
+      `UPDATE tbl_sign_recipient
+          SET signingToken = NULL, tokenExpiresAt = NULL, status = 'PENDING'
+        WHERE documentId = ?`,
+      [documentId]
+    );
+    await conn.query(
+      `UPDATE tbl_user
+          SET monthlySignsUsed = GREATEST(0, monthlySignsUsed - 1)
+        WHERE id = ?`,
+      [userId]
+    );
+    await db.commit(conn);
+    logger.warn({ documentId, userId }, 'Reverted send after all invitation emails failed');
+  } catch (err) {
+    try {
+      await db.rollback(conn);
+    } catch {
+      /* already released */
+    }
+    logger.error({ err, documentId }, 'Failed to revert send after email delivery failure');
+  }
 }
