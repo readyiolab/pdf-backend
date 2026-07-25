@@ -12,7 +12,7 @@ import {
   deleteObject,
   deleteObjects,
 } from '../../lib/s3';
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { detectFileCategory } from '../../../../shared/fileType';
@@ -105,12 +105,11 @@ function toFieldDTO(row: any): SignFieldDTO {
  * doesn't confirm that a document with that id exists at all.
  */
 async function loadOwnedDocument(documentId: string, userId: string): Promise<any> {
-  const [rows]: any = await getPool().query(
-    'SELECT * FROM tbl_sign_document WHERE id = ?',
-    [documentId]
-  );
-  const doc = rows[0];
-  if (!doc || doc.ownerId !== userId) {
+  const doc = await db.select('tbl_sign_document', '*', 'id = ? AND ownerId = ?', [
+    documentId,
+    userId,
+  ]);
+  if (!doc) {
     throw new AppError('Document not found', 404);
   }
   return doc;
@@ -223,11 +222,8 @@ export const signingService = {
     const expiresAt = new Date(Date.now() + SIGNING_LIMITS.defaultExpiryDays * 86400_000);
     const docTitle = (title || fileName.replace(/\.pdf$/i, '')).slice(0, SIGNING_LIMITS.maxTitleLength);
 
-    const pool = getPool();
-    const conn = await pool.getConnection();
+    const conn = await db.beginTransaction();
     try {
-      await conn.beginTransaction();
-
       await conn.query(
         `INSERT INTO tbl_sign_document
            (id, ownerId, title, status, fileKey, fileName, fileSize, pageCount, currentVersion, originalHash, expiresAt)
@@ -244,12 +240,10 @@ export const signingService = {
         [crypto.randomUUID(), documentId, fileKey, size, originalHash]
       );
 
-      await conn.commit();
+      await db.commit(conn);
     } catch (err) {
-      await conn.rollback();
+      await db.rollback(conn);
       throw err;
-    } finally {
-      conn.release();
     }
 
     return this.getDocument(documentId, userId);
@@ -257,7 +251,6 @@ export const signingService = {
 
   async listDocuments(userId: string, query: ListDocumentsInput) {
     const { status, search, page, limit } = query;
-    const pool = getPool();
     const offset = (page - 1) * limit;
 
     const where: string[] = ['ownerId = ?'];
@@ -276,41 +269,77 @@ export const signingService = {
     }
     const whereSql = where.join(' AND ');
 
-    const [rows]: any = await pool.query(
-      `SELECT d.*,
-              (SELECT COUNT(1) FROM tbl_sign_recipient r WHERE r.documentId = d.id) AS recipientCount,
-              (SELECT COUNT(1) FROM tbl_sign_recipient r WHERE r.documentId = d.id AND r.status = 'COMPLETED') AS completedCount
-         FROM tbl_sign_document d
-        WHERE ${whereSql}
-        ORDER BY d.updatedAt DESC
-        LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
+    // Execute main document pagination query and total count query in parallel
+    const [rows, totalCount] = await Promise.all([
+      db.queryAll(
+        `SELECT d.*
+           FROM tbl_sign_document d
+          WHERE ${whereSql}
+          ORDER BY d.updatedAt DESC
+          LIMIT ? OFFSET ?`,
+        [...params, limit, offset]
+      ),
+      db.count('tbl_sign_document', whereSql, params),
+    ]);
+
+    if (!rows || rows.length === 0) {
+      return {
+        documents: [],
+        pagination: { page, limit, total: totalCount, totalPages: Math.ceil(totalCount / limit) },
+      };
+    }
+
+    // Batch aggregate recipient counts in a single query for the returned page of documents
+    const docIds = rows.map((r: any) => r.id);
+    const recipientCounts = await db.queryAll(
+      `SELECT documentId,
+              COUNT(1) AS recipientCount,
+              SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedCount
+         FROM tbl_sign_recipient
+        WHERE documentId IN (?)
+        GROUP BY documentId`,
+      [docIds]
     );
 
-    const [[{ total }]]: any = await pool.query(
-      `SELECT COUNT(1) AS total FROM tbl_sign_document WHERE ${whereSql}`,
-      params
-    );
+    const recipientMap = new Map<string, { recipientCount: number; completedCount: number }>();
+    for (const r of recipientCounts) {
+      recipientMap.set(r.documentId, {
+        recipientCount: Number(r.recipientCount || 0),
+        completedCount: Number(r.completedCount || 0),
+      });
+    }
+
+    const documentsWithCounts = rows.map((doc: any) => {
+      const counts = recipientMap.get(doc.id) || { recipientCount: 0, completedCount: 0 };
+      return {
+        ...doc,
+        recipientCount: counts.recipientCount,
+        completedCount: counts.completedCount,
+      };
+    });
 
     return {
-      documents: rows,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      documents: documentsWithCounts,
+      pagination: { page, limit, total: totalCount, totalPages: Math.ceil(totalCount / limit) },
     };
   },
 
-  /** Status tallies for the dashboard, in one round trip rather than six. */
+  /** Status tallies for the dashboard, in one round trip via Promise.all. */
   async getStats(userId: string) {
-    const pool = getPool();
-    const [rows]: any = await pool.query(
-      `SELECT status, COUNT(1) AS count
-         FROM tbl_sign_document
-        WHERE ownerId = ?
-        GROUP BY status`,
-      [userId]
-    );
+    // Run status breakdown query and user quota query in parallel
+    const [rows, user] = await Promise.all([
+      db.queryAll(
+        `SELECT status, COUNT(1) AS count
+           FROM tbl_sign_document
+          WHERE ownerId = ?
+          GROUP BY status`,
+        [userId]
+      ),
+      db.select('tbl_user', 'plan, monthlySignsUsed, monthlySignsResetAt', 'id = ?', [userId]),
+    ]);
 
     const byStatus: Record<string, number> = {
-      DRAFT: 0, SENT: 0, COMPLETED: 0, DECLINED: 0, EXPIRED: 0, VOIDED: 0,
+      DRAFT: 0, SENT: 0, FINALIZING: 0, COMPLETED: 0, DECLINED: 0, EXPIRED: 0, VOIDED: 0,
     };
     for (const r of rows) byStatus[r.status] = Number(r.count);
 
@@ -322,17 +351,12 @@ export const signingService = {
     // Monthly signing quota, so the dashboard can show "2 of 3 used" and the UI
     // can warn before the send actually fails. Read the same counter the send
     // reservation writes; treat an elapsed window as a fresh (0-used) month.
-    const [users]: any = await pool.query(
-      'SELECT plan, monthlySignsUsed, monthlySignsResetAt FROM tbl_user WHERE id = ?',
-      [userId]
-    );
-    const user = users[0];
     const plan = (user?.plan as 'FREE' | 'PRO') ?? 'FREE';
     const limit = PLAN_LIMITS[plan].maxMonthlySigns;
     const windowElapsed =
       !user?.monthlySignsResetAt ||
       new Date(user.monthlySignsResetAt).getTime() < Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const used = windowElapsed ? 0 : Number(user.monthlySignsUsed ?? 0);
+    const used = windowElapsed ? 0 : Number(user?.monthlySignsUsed ?? 0);
 
     return {
       byStatus,
@@ -353,16 +377,23 @@ export const signingService = {
 
   async getDocument(documentId: string, userId: string): Promise<SignDocumentDTO> {
     const doc = await loadOwnedDocument(documentId, userId);
-    const pool = getPool();
 
-    const [recipients]: any = await pool.query(
-      'SELECT * FROM tbl_sign_recipient WHERE documentId = ? ORDER BY signingOrder ASC, createdAt ASC',
-      [documentId]
-    );
-    const [fields]: any = await pool.query(
-      'SELECT * FROM tbl_sign_field WHERE documentId = ? ORDER BY page ASC, y ASC, x ASC',
-      [documentId]
-    );
+    const [recipients, fields] = await Promise.all([
+      db.selectAll(
+        'tbl_sign_recipient',
+        '*',
+        'documentId = ?',
+        [documentId],
+        'ORDER BY signingOrder ASC, createdAt ASC'
+      ),
+      db.selectAll(
+        'tbl_sign_field',
+        '*',
+        'documentId = ?',
+        [documentId],
+        'ORDER BY page ASC, y ASC, x ASC'
+      ),
+    ]);
 
     return {
       ...doc,
@@ -377,12 +408,14 @@ export const signingService = {
 
     let key = doc.fileKey;
     if (version) {
-      const [rows]: any = await getPool().query(
-        'SELECT fileKey FROM tbl_sign_document_version WHERE documentId = ? AND version = ?',
+      const row = await db.select(
+        'tbl_sign_document_version',
+        'fileKey',
+        'documentId = ? AND version = ?',
         [documentId, version]
       );
-      if (!rows[0]) throw new AppError('Document version not found', 404);
-      key = rows[0].fileKey;
+      if (!row) throw new AppError('Document version not found', 404);
+      key = row.fileKey;
     }
 
     // Longer than DOWNLOAD_URL_TTL: a viewer session outlives a click-to-save,
@@ -409,7 +442,7 @@ export const signingService = {
       params.push(input.expiresAt ? new Date(input.expiresAt) : null);
     }
 
-    await getPool().query(
+    await db.execute(
       `UPDATE tbl_sign_document SET ${sets.join(', ')} WHERE id = ?`,
       [...params, documentId]
     );
@@ -431,9 +464,10 @@ export const signingService = {
       throw new AppError('A completed agreement cannot be deleted.', 409);
     }
 
-    const pool = getPool();
-    const [versions]: any = await pool.query(
-      'SELECT fileKey FROM tbl_sign_document_version WHERE documentId = ?',
+    const versions = await db.selectAll(
+      'tbl_sign_document_version',
+      'fileKey',
+      'documentId = ?',
       [documentId]
     );
 
@@ -441,7 +475,7 @@ export const signingService = {
     // objects (recoverable, and reported by monitoring); if we deleted S3
     // first and the DB delete failed, the document would still be listed but
     // its bytes would be gone — a far worse state to be in.
-    await pool.query('DELETE FROM tbl_sign_document WHERE id = ?', [documentId]);
+    await db.delete('tbl_sign_document', 'id = ?', [documentId]);
     await deleteObjects([doc.fileKey, ...versions.map((v: any) => v.fileKey)]);
 
     return { id: documentId, deleted: true };
@@ -451,9 +485,10 @@ export const signingService = {
     const doc = await loadOwnedDocument(documentId, userId);
     assertDraft(doc, 'add recipients');
 
-    const pool = getPool();
-    const [existing]: any = await pool.query(
-      'SELECT id, email, signingOrder FROM tbl_sign_recipient WHERE documentId = ?',
+    const existing = await db.selectAll(
+      'tbl_sign_recipient',
+      'id, email, signingOrder',
+      'documentId = ?',
       [documentId]
     );
 
@@ -479,26 +514,22 @@ export const signingService = {
       ? await bcrypt.hash(input.accessCode, env.BCRYPT_ROUNDS)
       : null;
 
-    await pool.query(
-      `INSERT INTO tbl_sign_recipient
-         (id, documentId, name, email, phone, role, color, signingOrder, authMethod, accessCodeHash, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
-      [
-        recipientId,
-        documentId,
-        input.name.trim(),
-        email,
-        input.phone ?? null,
-        input.role,
-        color,
-        signingOrder,
-        input.authMethod,
-        accessCodeHash,
-      ]
-    );
+    await db.insert('tbl_sign_recipient', {
+      id: recipientId,
+      documentId,
+      name: input.name.trim(),
+      email,
+      phone: input.phone ?? null,
+      role: input.role,
+      color,
+      signingOrder,
+      authMethod: input.authMethod,
+      accessCodeHash,
+      status: 'PENDING',
+    });
 
-    const [rows]: any = await pool.query('SELECT * FROM tbl_sign_recipient WHERE id = ?', [recipientId]);
-    return toRecipientDTO(rows[0]);
+    const row = await db.select('tbl_sign_recipient', '*', 'id = ?', [recipientId]);
+    return toRecipientDTO(row);
   },
 
   async updateRecipient(
@@ -510,12 +541,12 @@ export const signingService = {
     const doc = await loadOwnedDocument(documentId, userId);
     assertDraft(doc, 'edit recipients');
 
-    const pool = getPool();
-    const [rows]: any = await pool.query(
-      'SELECT id, phone, authMethod FROM tbl_sign_recipient WHERE id = ? AND documentId = ?',
+    const existing = await db.select(
+      'tbl_sign_recipient',
+      'id, phone, authMethod',
+      'id = ? AND documentId = ?',
       [recipientId, documentId]
     );
-    const existing = rows[0];
     if (!existing) throw new AppError('Recipient not found', 404);
 
     // Zod validates the PATCH body in isolation and can't see the stored row, so
@@ -533,11 +564,13 @@ export const signingService = {
     if (input.name !== undefined) { sets.push('name = ?'); params.push(input.name.trim()); }
     if (input.email !== undefined) {
       const email = input.email.toLowerCase().trim();
-      const [dupes]: any = await pool.query(
-        'SELECT id FROM tbl_sign_recipient WHERE documentId = ? AND email = ? AND id <> ?',
+      const dupe = await db.select(
+        'tbl_sign_recipient',
+        'id',
+        'documentId = ? AND email = ? AND id <> ?',
         [documentId, email, recipientId]
       );
-      if (dupes.length) throw new AppError('Another recipient already uses this email.', 409);
+      if (dupe) throw new AppError('Another recipient already uses this email.', 409);
       sets.push('email = ?');
       params.push(email);
     }
@@ -559,20 +592,20 @@ export const signingService = {
       params.push(await bcrypt.hash(input.accessCode, env.BCRYPT_ROUNDS));
     }
 
-    await pool.query(
+    await db.execute(
       `UPDATE tbl_sign_recipient SET ${sets.join(', ')} WHERE id = ?`,
       [...params, recipientId]
     );
 
-    const [updated]: any = await pool.query('SELECT * FROM tbl_sign_recipient WHERE id = ?', [recipientId]);
-    return toRecipientDTO(updated[0]);
+    const updated = await db.select('tbl_sign_recipient', '*', 'id = ?', [recipientId]);
+    return toRecipientDTO(updated);
   },
 
   async removeRecipient(documentId: string, recipientId: string, userId: string) {
     const doc = await loadOwnedDocument(documentId, userId);
     assertDraft(doc, 'remove recipients');
 
-    const [result]: any = await getPool().query(
+    const result = await db.execute(
       'DELETE FROM tbl_sign_recipient WHERE id = ? AND documentId = ?',
       [recipientId, documentId]
     );
@@ -595,9 +628,10 @@ export const signingService = {
     const doc = await loadOwnedDocument(documentId, userId);
     assertDraft(doc, 'change field placement');
 
-    const pool = getPool();
-    const [recipients]: any = await pool.query(
-      'SELECT id FROM tbl_sign_recipient WHERE documentId = ?',
+    const recipients = await db.selectAll(
+      'tbl_sign_recipient',
+      'id',
+      'documentId = ?',
       [documentId]
     );
     const validRecipientIds = new Set(recipients.map((r: any) => r.id));
@@ -613,10 +647,8 @@ export const signingService = {
       }
     }
 
-    const conn = await pool.getConnection();
+    const conn = await db.beginTransaction();
     try {
-      await conn.beginTransaction();
-
       await conn.query('DELETE FROM tbl_sign_field WHERE documentId = ?', [documentId]);
 
       if (input.fields.length > 0) {
@@ -650,17 +682,18 @@ export const signingService = {
       // reflects design work, not just document-level edits.
       await conn.query('UPDATE tbl_sign_document SET updatedAt = CURRENT_TIMESTAMP(3) WHERE id = ?', [documentId]);
 
-      await conn.commit();
+      await db.commit(conn);
     } catch (err) {
-      await conn.rollback();
+      await db.rollback(conn);
       throw err;
-    } finally {
-      conn.release();
     }
 
-    const [rows]: any = await pool.query(
-      'SELECT * FROM tbl_sign_field WHERE documentId = ? ORDER BY page ASC, y ASC, x ASC',
-      [documentId]
+    const rows = await db.selectAll(
+      'tbl_sign_field',
+      '*',
+      'documentId = ?',
+      [documentId],
+      'ORDER BY page ASC, y ASC, x ASC'
     );
     return rows.map(toFieldDTO);
   },
@@ -673,23 +706,30 @@ export const signingService = {
    * dashboard and logged along the way.
    */
   async getStatus(documentId: string, userId: string) {
-    const doc = await loadOwnedDocument(documentId, userId);
-    const pool = getPool();
+    const [doc, recipients, fieldStats, versions] = await Promise.all([
+      db.select('tbl_sign_document', '*', 'id = ?', [documentId]),
+      db.selectAll(
+        'tbl_sign_recipient',
+        '*',
+        'documentId = ?',
+        [documentId],
+        'ORDER BY signingOrder ASC, createdAt ASC'
+      ),
+      db.query(
+        `SELECT COUNT(1) AS total, SUM(CASE WHEN value IS NOT NULL THEN 1 ELSE 0 END) AS filled
+           FROM tbl_sign_field WHERE documentId = ?`,
+        [documentId]
+      ),
+      db.queryAll(
+        `SELECT version, sha256, label, fileSize, digitallySigned, selfSignedCert, tsaTimestamp, createdAt
+           FROM tbl_sign_document_version WHERE documentId = ? ORDER BY version ASC`,
+        [documentId]
+      ),
+    ]);
 
-    const [recipients]: any = await pool.query(
-      'SELECT * FROM tbl_sign_recipient WHERE documentId = ? ORDER BY signingOrder ASC, createdAt ASC',
-      [documentId]
-    );
-    const [[fieldStats]]: any = await pool.query(
-      `SELECT COUNT(1) AS total, SUM(value IS NOT NULL) AS filled
-         FROM tbl_sign_field WHERE documentId = ?`,
-      [documentId]
-    );
-    const [versions]: any = await pool.query(
-      `SELECT version, sha256, label, fileSize, digitallySigned, selfSignedCert, tsaTimestamp, createdAt
-         FROM tbl_sign_document_version WHERE documentId = ? ORDER BY version ASC`,
-      [documentId]
-    );
+    if (!doc || doc.ownerId !== userId) {
+      throw new AppError('Document not found', 404);
+    }
 
     const actionable = recipients.filter((r: any) => r.role === 'SIGNER' || r.role === 'APPROVER');
     const completed = actionable.filter((r: any) => r.status === 'COMPLETED');
@@ -707,8 +747,8 @@ export const signingService = {
       progress: {
         signed: completed.length,
         total: actionable.length,
-        fieldsFilled: Number(fieldStats.filled ?? 0),
-        fieldsTotal: Number(fieldStats.total ?? 0),
+        fieldsFilled: Number(fieldStats?.filled ?? 0),
+        fieldsTotal: Number(fieldStats?.total ?? 0),
       },
       recipients: recipients.map(toRecipientDTO),
       versions: versions.map((v: any) => ({
@@ -727,15 +767,17 @@ export const signingService = {
    */
   async getDownloadUrl(documentId: string, userId: string, version?: number) {
     const doc = await loadOwnedDocument(documentId, userId);
-    const [rows]: any = await getPool().query(
-      'SELECT fileKey, version FROM tbl_sign_document_version WHERE documentId = ? AND version = ?',
+    const row = await db.select(
+      'tbl_sign_document_version',
+      'fileKey, version',
+      'documentId = ? AND version = ?',
       [documentId, version ?? doc.currentVersion]
     );
-    if (!rows[0]) throw new AppError('That version does not exist.', 404);
+    if (!row) throw new AppError('That version does not exist.', 404);
 
-    const suffix = rows[0].version === 1 ? 'original' : 'signed';
+    const suffix = row.version === 1 ? 'original' : 'signed';
     const name = `${doc.title.replace(/[^a-zA-Z0-9 _-]/g, '')} (${suffix}).pdf`;
-    return { url: await getSignedDownloadUrl(rows[0].fileKey, name) };
+    return { url: await getSignedDownloadUrl(row.fileKey, name) };
   },
 
   /**
@@ -750,22 +792,85 @@ export const signingService = {
       throw new AppError('A certificate is only available once every recipient has signed.', 409);
     }
 
-    const [rows]: any = await getPool().query(
+    const row = await db.query(
       `SELECT certificateKey FROM tbl_sign_document_version
         WHERE documentId = ? AND certificateKey IS NOT NULL
         ORDER BY version DESC LIMIT 1`,
       [documentId]
     );
-    if (!rows[0]?.certificateKey) {
+    if (!row?.certificateKey) {
       throw new AppError('No certificate has been generated for this document.', 404);
     }
 
     const name = `${doc.title.replace(/[^a-zA-Z0-9 _-]/g, '')} (certificate).pdf`;
-    return { url: await getSignedDownloadUrl(rows[0].certificateKey, name) };
+    return { url: await getSignedDownloadUrl(row.certificateKey, name) };
   },
 
   /** Ownership gate for the audit endpoint. */
   async assertOwnership(documentId: string, userId: string): Promise<void> {
     await loadOwnedDocument(documentId, userId);
+  },
+
+  /**
+   * Cancels an in-flight signing request. Recipients who already hold a link
+   * will see VOIDED on their next open; completed docs cannot be voided.
+   */
+  async voidDocument(documentId: string, userId: string): Promise<{ id: string; status: 'VOIDED' }> {
+    const doc = await loadOwnedDocument(documentId, userId);
+    if (doc.status !== 'SENT' && doc.status !== 'FINALIZING') {
+      throw new AppError('Only documents awaiting signature can be cancelled.', 409);
+    }
+
+    const result = await db.execute(
+      "UPDATE tbl_sign_document SET status = 'VOIDED' WHERE id = ? AND status IN ('SENT', 'FINALIZING')",
+      [documentId]
+    );
+    if (result.affectedRows === 0) {
+      throw new AppError('Only documents awaiting signature can be cancelled.', 409);
+    }
+
+    return { id: documentId, status: 'VOIDED' };
+  },
+
+  /**
+   * Flips past-deadline SENT documents to EXPIRED. Called from the public
+   * signing path (lazy) and from the maintenance worker (batch).
+   * Returns the ids that were expired in this call.
+   */
+  async expireOverdueDocuments(limit = 200): Promise<string[]> {
+    const now = new Date();
+    const rows = await db.queryAll(
+      `SELECT id FROM tbl_sign_document
+        WHERE status = 'SENT' AND expiresAt IS NOT NULL AND expiresAt < ?
+        ORDER BY expiresAt ASC
+        LIMIT ?`,
+      [now, limit]
+    );
+    if (!rows.length) return [];
+
+    const ids = rows.map((r: any) => r.id as string);
+    const upd = await db.execute(
+      `UPDATE tbl_sign_document SET status = 'EXPIRED'
+        WHERE status = 'SENT' AND id IN (${ids.map(() => '?').join(',')})`,
+      ids
+    );
+    if (upd.affectedRows === 0) return [];
+
+    // Re-read in case a concurrent finalize claimed some rows.
+    const expired = await db.queryAll(
+      `SELECT id FROM tbl_sign_document WHERE status = 'EXPIRED' AND id IN (?)`,
+      [ids]
+    );
+    return expired.map((r: any) => r.id as string);
+  },
+
+  /** Expire a single document if its deadline has passed. Returns true if flipped. */
+  async expireIfOverdue(documentId: string): Promise<boolean> {
+    const result = await db.execute(
+      `UPDATE tbl_sign_document SET status = 'EXPIRED'
+        WHERE id = ? AND status = 'SENT' AND expiresAt IS NOT NULL AND expiresAt < ?`,
+      [documentId, new Date()]
+    );
+    return result.affectedRows > 0;
   },
 };

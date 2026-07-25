@@ -1,7 +1,8 @@
 import { Queue, Worker, Job } from 'bullmq';
+import crypto from 'crypto';
 import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
-import { getPool } from '../lib/mysql';
+import { db } from '../lib/mysql';
 import { deleteFromS3 } from '../storage/s3';
 import { env } from '../config/env';
 import { MAINTENANCE_QUEUE } from '../../../shared/constants';
@@ -14,10 +15,9 @@ const CLEANUP_JOB = 'cleanup-expired';
  * cluster, survives restarts, and can be observed/retried like any other job.
  */
 async function cleanupExpired(): Promise<void> {
-  const pool = getPool();
   const now = new Date();
 
-  const [expired]: any = await pool.query(
+  const expired = await db.queryAll(
     'SELECT id, inputFiles, outputFile FROM tbl_job WHERE expiresAt < ? LIMIT 1000',
     [now]
   );
@@ -38,8 +38,9 @@ async function cleanupExpired(): Promise<void> {
 
   await deleteFromS3(keys);
 
-  const ids = expired.map((j: any) => j.id);
-  const [del]: any = await pool.query('DELETE FROM tbl_job WHERE id IN (?)', [ids]);
+  const ids = expired.map((j: any) => j.id as string);
+  const placeholders = ids.map(() => '?').join(',');
+  const del = await db.execute(`DELETE FROM tbl_job WHERE id IN (${placeholders})`, ids);
   logger.info(
     { deletedJobs: del.affectedRows, deletedFiles: keys.length },
     'Maintenance: cleaned up expired jobs'
@@ -51,9 +52,8 @@ async function cleanupExpired(): Promise<void> {
  * signature of a worker that crashed mid-job without BullMQ recovering it.
  */
 async function reapStalledJobs(): Promise<void> {
-  const pool = getPool();
   const cutoff = new Date(Date.now() - env.STALE_JOB_MINUTES * 60 * 1000);
-  const [res]: any = await pool.query(
+  const res = await db.execute(
     `UPDATE tbl_job
         SET status = 'FAILED', errorMessage = 'Processing stalled and was terminated', completedAt = ?
       WHERE status = 'PROCESSING' AND createdAt < ?`,
@@ -64,10 +64,54 @@ async function reapStalledJobs(): Promise<void> {
   }
 }
 
+/**
+ * Flips past-deadline SENT signing documents to EXPIRED and writes audit rows.
+ * Business expiry only — never deletes the sealed PDF or audit trail.
+ */
+async function expireSignDocuments(): Promise<void> {
+  const now = new Date();
+  const rows = await db.queryAll(
+    `SELECT id FROM tbl_sign_document
+      WHERE status = 'SENT' AND expiresAt IS NOT NULL AND expiresAt < ?
+      ORDER BY expiresAt ASC
+      LIMIT 500`,
+    [now]
+  );
+  if (!rows.length) return;
+
+  const ids = rows.map((r: any) => r.id as string);
+  const placeholders = ids.map(() => '?').join(',');
+  const upd = await db.execute(
+    `UPDATE tbl_sign_document SET status = 'EXPIRED'
+      WHERE status = 'SENT' AND id IN (${placeholders})`,
+    ids
+  );
+  if (upd.affectedRows === 0) return;
+
+  const expired = await db.queryAll(
+    `SELECT id FROM tbl_sign_document WHERE status = 'EXPIRED' AND id IN (${placeholders})`,
+    ids
+  );
+
+  for (const row of expired) {
+    try {
+      await db.insert('tbl_sign_audit', {
+        id: crypto.randomUUID(),
+        documentId: row.id,
+        action: 'DOCUMENT_EXPIRED',
+        detail: 'Signing deadline passed',
+      });
+    } catch (err) {
+      logger.error({ err, documentId: row.id }, 'Maintenance: failed to write DOCUMENT_EXPIRED audit');
+    }
+  }
+
+  logger.info({ count: expired.length }, 'Maintenance: expired signing documents');
+}
+
 export async function startMaintenanceWorker() {
   const queue = new Queue(MAINTENANCE_QUEUE, { connection: redis as any });
 
-  // A fixed repeat key ensures only one repeatable exists even with many replicas.
   await queue.add(
     CLEANUP_JOB,
     {},
@@ -79,7 +123,6 @@ export async function startMaintenanceWorker() {
     }
   );
 
-  // Run one sweep shortly after boot rather than waiting a full interval.
   await queue.add(CLEANUP_JOB, {}, { removeOnComplete: true, removeOnFail: 20 });
 
   const worker = new Worker(
@@ -88,6 +131,7 @@ export async function startMaintenanceWorker() {
       if (job.name === CLEANUP_JOB) {
         await reapStalledJobs();
         await cleanupExpired();
+        await expireSignDocuments();
       }
     },
     { connection: redis as any, concurrency: 1 }

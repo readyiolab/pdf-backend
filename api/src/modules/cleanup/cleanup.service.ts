@@ -1,6 +1,6 @@
 import { DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { s3 } from '../../lib/s3';
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 
@@ -8,12 +8,13 @@ export const cleanupService = {
   async cleanupExpiredJobs() {
     logger.info('Starting scheduled cleanup of expired jobs and S3 objects...');
     const now = new Date();
-    const pool = getPool();
 
     try {
       // 1. Find jobs that have expired -> tbl_job
-      const [expiredJobs]: any = await pool.query(
-        'SELECT id, inputFiles, outputFile FROM tbl_job WHERE expiresAt < ?',
+      const expiredJobs = await db.selectAll(
+        'tbl_job',
+        'id, inputFiles, outputFile',
+        'expiresAt < ?',
         [now]
       );
 
@@ -69,10 +70,11 @@ export const cleanupService = {
 
       // 4. Delete corresponding job rows from MySQL -> tbl_job
       const expiredJobIds = expiredJobs.map((j: any) => j.id);
-      
-      const [deleteResult]: any = await pool.query(
-        'DELETE FROM tbl_job WHERE id IN (?)',
-        [expiredJobIds]
+      const placeholders = expiredJobIds.map(() => '?').join(',');
+
+      const deleteResult = await db.execute(
+        `DELETE FROM tbl_job WHERE id IN (${placeholders})`,
+        expiredJobIds
       );
 
       logger.info(

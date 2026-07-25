@@ -1,4 +1,4 @@
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { redis } from '../../lib/redis';
 
 export const healthService = {
@@ -7,15 +7,15 @@ export const healthService = {
     let redisStatus = 'UP';
 
     try {
-      const pool = getPool();
-      await pool.query('SELECT 1');
-    } catch (err) {
+      const check = await db.healthCheck();
+      dbStatus = check.status === 'healthy' ? 'UP' : 'DOWN';
+    } catch {
       dbStatus = 'DOWN';
     }
 
     try {
       await redis.ping();
-    } catch (err) {
+    } catch {
       redisStatus = 'DOWN';
     }
 

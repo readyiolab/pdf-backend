@@ -6,6 +6,7 @@ import uploadRoutes from '../modules/upload/upload.routes';
 import jobsRoutes from '../modules/jobs/jobs.routes';
 import billingRoutes from '../modules/billing/billing.routes';
 import aiRoutes from '../modules/ai/ai.routes';
+import { cloudRoutes } from '../modules/cloud/cloud.routes';
 
 const router = Router();
 
@@ -19,5 +20,6 @@ router.use('/upload', uploadRoutes);
 router.use('/jobs', jobsRoutes);
 router.use('/billing', billingRoutes);
 router.use('/ai', aiRoutes);
+router.use('/cloud', cloudRoutes);
 
 export default router;

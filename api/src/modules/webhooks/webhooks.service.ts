@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { invalidateUser } from '../../lib/userCache';
@@ -48,7 +48,6 @@ export const webhooksService = {
     const subId = subscriptionData.id;
     const subStatus = subscriptionData.status;
     const currentEndEpoch = subscriptionData.current_end; // unix timestamp
-    const pool = getPool();
 
     logger.info({ eventName, subId, subStatus }, 'Processing Razorpay webhook');
 
@@ -56,30 +55,26 @@ export const webhooksService = {
     switch (eventName) {
       case 'subscription.activated':
       case 'subscription.charged': {
-        const [subs]: any = await pool.query('SELECT * FROM tbl_subscription WHERE razorpaySubId = ?', [subId]);
-        const dbSub = subs[0];
+        const dbSub = await db.select('tbl_subscription', '*', 'razorpaySubId = ?', [subId]);
 
         if (dbSub) {
-          const conn = await pool.getConnection();
+          const conn = await db.beginTransaction();
           try {
-            await conn.beginTransaction();
             const currentPeriodEnd = currentEndEpoch ? new Date(currentEndEpoch * 1000) : null;
-            
+
             await conn.query(
               'UPDATE tbl_subscription SET status = ?, currentPeriodEnd = ? WHERE id = ?',
               ['active', currentPeriodEnd, dbSub.id]
             );
             await conn.query('UPDATE tbl_user SET plan = ? WHERE id = ?', ['PRO', dbSub.userId]);
 
-            await conn.commit();
+            await db.commit(conn);
             await invalidateUser(dbSub.userId);
             logger.info({ userId: dbSub.userId }, 'User upgraded to PRO plan via webhook');
           } catch (err) {
-            await conn.rollback();
+            await db.rollback(conn);
             logger.error({ err, subId }, 'Transaction failed for subscription activation');
             throw err;
-          } finally {
-            conn.release();
           }
         } else {
           logger.warn({ subId }, 'Subscription record not found in DB for activation');
@@ -90,13 +85,11 @@ export const webhooksService = {
       case 'subscription.halted':
       case 'subscription.cancelled':
       case 'subscription.completed': {
-        const [subs]: any = await pool.query('SELECT * FROM tbl_subscription WHERE razorpaySubId = ?', [subId]);
-        const dbSub = subs[0];
+        const dbSub = await db.select('tbl_subscription', '*', 'razorpaySubId = ?', [subId]);
 
         if (dbSub) {
-          const conn = await pool.getConnection();
+          const conn = await db.beginTransaction();
           try {
-            await conn.beginTransaction();
             const currentPeriodEnd = currentEndEpoch ? new Date(currentEndEpoch * 1000) : null;
 
             await conn.query(
@@ -105,15 +98,13 @@ export const webhooksService = {
             );
             await conn.query('UPDATE tbl_user SET plan = ? WHERE id = ?', ['FREE', dbSub.userId]);
 
-            await conn.commit();
+            await db.commit(conn);
             await invalidateUser(dbSub.userId);
             logger.info({ userId: dbSub.userId }, 'User downgraded to FREE plan via webhook');
           } catch (err) {
-            await conn.rollback();
+            await db.rollback(conn);
             logger.error({ err, subId }, 'Transaction failed for subscription cancellation');
             throw err;
-          } finally {
-            conn.release();
           }
         }
         break;

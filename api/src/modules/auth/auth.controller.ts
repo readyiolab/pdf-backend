@@ -32,11 +32,37 @@ export const authController = {
 
   async logout(req: Request, res: Response, next: NextFunction) {
     try {
-      // Revoke the presented token so it can't be reused before its expiry.
       if (req.tokenJti && req.tokenExp) {
         await revokeToken(req.tokenJti, req.tokenExp);
       }
       res.status(200).json({ status: 'success', message: 'Logged out' });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async google(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.googleAuth(req.body);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async verifyEmail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.verifyEmail(req.body.token);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async resendVerification(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.resendVerification(req.user.id);
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }

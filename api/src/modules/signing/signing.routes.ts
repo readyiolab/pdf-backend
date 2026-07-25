@@ -1,33 +1,42 @@
 import { Router } from 'express';
 import { signingController } from './signing.controller';
-import { authMiddleware, requireFullAccount } from '../../middleware/auth.middleware';
+import { authMiddleware, requireFullAccount, requireVerifiedEmail } from '../../middleware/auth.middleware';
 import { designerRateLimiter } from '../../middleware/rateLimit.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import {
   addRecipientSchema,
   auditQuerySchema,
   createDocumentSchema,
+  createTemplateSchema,
   documentIdSchema,
   documentVersionSchema,
   listDocumentsSchema,
   presignDocumentSchema,
   recipientIdSchema,
   saveFieldsSchema,
+  templateIdSchema,
   updateDocumentSchema,
   updateRecipientSchema,
+  useTemplateSchema,
 } from './signing.types';
 
 const router = Router();
 
 // Every signing route requires a real (non-guest) account. Applied at the
 // router level so a new route can't accidentally be added without it.
-router.use(authMiddleware, requireFullAccount);
+router.use(authMiddleware, requireFullAccount, requireVerifiedEmail);
 
 // --- Documents ---
 router.post('/presign', validate(presignDocumentSchema), signingController.presignUpload);
 router.post('/', validate(createDocumentSchema), signingController.createDocument);
 router.get('/', validate(listDocumentsSchema), signingController.listDocuments);
 router.get('/stats', signingController.getStats);
+
+// --- Templates (before /:id so "templates" is not parsed as a document id) ---
+router.get('/templates', signingController.listTemplates);
+router.post('/templates', validate(createTemplateSchema), signingController.createTemplate);
+router.delete('/templates/:id', validate(templateIdSchema), signingController.deleteTemplate);
+router.post('/templates/:id/use', validate(useTemplateSchema), signingController.useTemplate);
 
 // NOTE: /stats is declared before /:id so Express doesn't match "stats" as a
 // document id (the uuid validator would then reject it with a confusing 400).
@@ -48,6 +57,8 @@ router.put('/:id/fields', designerRateLimiter, validate(saveFieldsSchema), signi
 
 // --- Sending ---
 router.post('/:id/send', validate(documentIdSchema), signingController.send);
+router.post('/:id/send-self', validate(documentIdSchema), signingController.sendSelf);
+router.post('/:id/void', validate(documentIdSchema), signingController.voidDocument);
 router.post('/:id/recipients/:recipientId/resend', validate(recipientIdSchema), signingController.resend);
 
 // --- Tracking ---

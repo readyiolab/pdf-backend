@@ -2,9 +2,10 @@ import crypto from 'crypto';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { s3, getObjectBytes, headObjectSize, readObjectHead } from '../../lib/s3';
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
+import { redis } from '../../lib/redis';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { detectFileCategory } from '../../../../shared/fileType';
 import { PLAN_LIMITS } from '../../../../shared/constants';
@@ -18,6 +19,9 @@ const AI_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const AI_MAX_BYTES = 30 * 1024 * 1024;
 /** Keep only the most recent turns so a long chat can't grow the prompt unbounded. */
 const MAX_CHAT_TURNS = 20;
+/** Cache extracted PDF text so chat turns don't re-download + re-parse. */
+const AI_TEXT_CACHE_TTL = 30 * 60; // 30 minutes
+const AI_TEXT_CACHE_PREFIX = 'ai:pdftext:';
 
 const SYSTEM_PROMPT =
   'You are a precise document assistant. You answer strictly from the provided document text, never inventing facts that are not in it. If the answer is not in the document, say so plainly. Keep answers clear and well-structured.';
@@ -111,6 +115,17 @@ export const aiService = {
       throw new AppError('Invalid file for this account.', 400);
     }
 
+    const cacheKey = `${AI_TEXT_CACHE_PREFIX}${fileKey}`;
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        logger.info({ fileKey }, 'AI text cache hit');
+        return cached;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'AI text cache read failed — extracting fresh');
+    }
+
     let size: number;
     try {
       size = await headObjectSize(fileKey);
@@ -127,19 +142,22 @@ export const aiService = {
 
     const extracted = await extractPdfText(await getObjectBytes(fileKey));
     assertHasText(extracted);
+
+    try {
+      await redis.set(cacheKey, extracted.text, 'EX', AI_TEXT_CACHE_TTL);
+    } catch (err) {
+      logger.warn({ err }, 'AI text cache write failed');
+    }
+
     return extracted.text;
   },
 
   async getQuota(userId: string, plan: 'FREE' | 'PRO') {
-    const [rows]: any = await getPool().query(
-      'SELECT monthlyAiUsed, monthlyAiResetAt FROM tbl_user WHERE id = ?',
-      [userId]
-    );
-    const row = rows[0];
+    const row = await db.select('tbl_user', 'monthlyAiUsed, monthlyAiResetAt', 'id = ?', [userId]);
     const limit = PLAN_LIMITS[plan].maxMonthlyAiCredits;
     const windowElapsed =
       !row?.monthlyAiResetAt || new Date(row.monthlyAiResetAt).getTime() < Date.now() - AI_WINDOW_MS;
-    const used = windowElapsed ? 0 : Number(row.monthlyAiUsed ?? 0);
+    const used = windowElapsed ? 0 : Number(row?.monthlyAiUsed ?? 0);
     return { used, limit, remaining: Math.max(0, limit - used), plan };
   },
 };
@@ -148,7 +166,7 @@ export const aiService = {
 async function reserveAiCredit(userId: string, limit: number, plan: 'FREE' | 'PRO'): Promise<void> {
   const now = new Date();
   const cutoff = new Date(now.getTime() - AI_WINDOW_MS);
-  const [reserve]: any = await getPool().query(
+  const reserve = await db.execute(
     `UPDATE tbl_user
         SET monthlyAiUsed    = IF(monthlyAiResetAt < ?, 1, monthlyAiUsed + 1),
             monthlyAiResetAt = IF(monthlyAiResetAt < ?, ?, monthlyAiResetAt)
@@ -166,7 +184,7 @@ async function reserveAiCredit(userId: string, limit: number, plan: 'FREE' | 'PR
 }
 
 async function refundAiCredit(userId: string): Promise<void> {
-  await getPool().query(
+  await db.execute(
     'UPDATE tbl_user SET monthlyAiUsed = GREATEST(monthlyAiUsed - 1, 0) WHERE id = ?',
     [userId]
   );

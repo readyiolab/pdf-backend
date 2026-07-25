@@ -5,6 +5,8 @@ export const HEAVY_JOBS_QUEUE = 'heavy-jobs';
 export const LIGHT_JOBS_QUEUE = 'light-jobs';
 export const MAINTENANCE_QUEUE = 'maintenance';
 export const DEAD_JOBS_QUEUE = 'dead-jobs';
+/** Dedicated queue for sealing signed PDFs (stamp + cert + PKCS#7). */
+export const SIGN_FINALIZE_QUEUE = 'sign-finalize';
 
 // Allowed input file categories per tool. Used to reject files whose real bytes
 // don't match what the tool can process (defense against malicious uploads).
@@ -41,6 +43,12 @@ export interface PlanLimits {
   maxMonthlySigns: number;
 
   /**
+   * Reusable e-sign templates (recipient roles + field layout) a plan may keep.
+   * Aligned with Nitro Standard's small free allowance.
+   */
+  maxSignTemplates: number;
+
+  /**
    * AI requests (Chat/Summarize/Explain) allowed per rolling 30-day window.
    *
    * Separate from every other counter because each AI call costs real money at
@@ -56,12 +64,14 @@ export const PLAN_LIMITS: Record<'FREE' | 'PRO', PlanLimits> = {
     maxDailyOps: 5,
     maxFileSize: 10 * 1024 * 1024, // 10MB
     maxMonthlySigns: 3, // enough to try the feature; upgrade for real use
+    maxSignTemplates: 3,
     maxMonthlyAiCredits: 20, // a taste of AI; upgrade for real use
   },
   PRO: {
     maxDailyOps: 1000, // Practically unlimited compared to 5, but provides a safety guardrail
     maxFileSize: 100 * 1024 * 1024, // 100MB
     maxMonthlySigns: 200, // generous, but a guardrail against runaway email cost
+    maxSignTemplates: 50,
     maxMonthlyAiCredits: 500, // generous, but bounds runaway token spend
   },
 };

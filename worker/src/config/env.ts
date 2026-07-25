@@ -34,6 +34,14 @@ const envSchema = z.object({
   CLEANUP_INTERVAL_MINUTES: z.coerce.number().default(15),
   // Jobs stuck in PROCESSING longer than this are considered stalled and failed.
   STALE_JOB_MINUTES: z.coerce.number().default(30),
+
+  // Optional absolute paths when binaries are not on PATH.
+  // On Ubuntu leave unset after: apt install poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin
+  PDFTOPPM_PATH: z.string().optional(),
+  TESSERACT_PATH: z.string().optional(),
+  // Optional. Only set if you ship a complete tessdata dir (langs + configs/pdf + pdf.ttf).
+  // Do NOT point at a langs-only folder — PDF output will silently fail.
+  TESSDATA_DIR: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

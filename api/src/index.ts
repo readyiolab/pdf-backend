@@ -15,6 +15,7 @@ import { errorHandler } from './middleware/errorHandler.middleware';
 import { createDashboard } from './lib/bullBoard';
 import { createMysqlPool } from './lib/mysql';
 import { isMailerConfigured } from './lib/mailer';
+import { startSignFinalizeWorker } from './lib/signFinalizeWorker';
 
 const app = express();
 
@@ -33,9 +34,14 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      callback(new Error(`Origin ${origin} not allowed by CORS`));
+      // Allow localhost in development
+      if (env.NODE_ENV === 'development' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+      callback(null, false);
     },
     credentials: true,
+    maxAge: 86400, // Cache preflight OPTIONS responses for 24 hours
   })
 );
 
@@ -137,7 +143,10 @@ async function bootstrap() {
     // 1. Initialize MySQL Connection Pool & tables
     await createMysqlPool();
 
-    // 2. Start HTTP Server
+    // 2. Start sign-finalize worker (seals PDFs off the HTTP path)
+    startSignFinalizeWorker();
+
+    // 3. Start HTTP Server
     const server = app.listen(env.PORT, () => {
       logger.info(`🚀 API Service running on port ${env.PORT} in ${env.NODE_ENV} mode`);
       // Surface config state that silently degrades a feature rather than

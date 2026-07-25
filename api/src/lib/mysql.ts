@@ -1,60 +1,32 @@
-import mysql from 'mysql2/promise';
-import { env } from '../config/env';
+import type { Pool, PoolConnection } from 'mysql2/promise';
 import { logger } from './logger';
 import { ensureColumn, ensureIndex } from './ddl';
 import { initializeSigningSchema } from './signingSchema';
+import { db } from './database';
 
-let pool: mysql.Pool | null = null;
+export { db } from './database';
 
-export async function createMysqlPool(): Promise<mysql.Pool> {
-  if (pool) {
-    return pool;
-  }
-
-  logger.info({ host: env.DB_HOST, port: env.DB_PORT, user: env.DB_USER, db: env.DB_NAME }, 'Initializing MySQL Connection Pool');
-
-  pool = mysql.createPool({
-    host: env.DB_HOST,
-    port: env.DB_PORT,
-    user: env.DB_USER,
-    password: env.DB_PASSWORD,
-    database: env.DB_NAME,
-    waitForConnections: true,
-    connectionLimit: env.DB_CONNECTION_LIMIT,
-    queueLimit: 100,
-    timezone: 'Z',
+/**
+ * Boots the shared Database pool and runs DDL. Prefer importing `db` for
+ * select / insert / update / query helpers instead of calling the pool directly.
+ */
+export async function createMysqlPool(): Promise<Pool> {
+  return db.connect({
+    onReady: async (pool) => {
+      await initializeDatabase(pool);
+    },
   });
-
-  try {
-    const connection = await pool.getConnection();
-    await connection.ping();
-    connection.release();
-    logger.info('MySQL pool connected successfully');
-
-    // Automatically initialize tables if they don't exist (with tbl_ prefix)
-    await initializeDatabase(pool);
-  } catch (error: any) {
-    logger.error('Failed to connect to MySQL', {
-      error: error instanceof Error ? error.message : error,
-    });
-    throw error;
-  }
-
-  return pool;
 }
 
-export function getPool(): mysql.Pool {
-  if (!pool) {
-    throw new Error('MySQL pool has not been initialized');
-  }
-  return pool;
+/** @deprecated Prefer `db` helpers. Kept for DDL helpers and gradual migration. */
+export function getPool(): Pool {
+  return db.getPool();
 }
 
-async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
+async function initializeDatabase(dbPool: Pool): Promise<void> {
   logger.info('Running database DDL initializations for prefixed tables (tbl_)...');
   const conn = await dbPool.getConnection();
   try {
-    // 1. User table -> tbl_user
     await conn.query(`
       CREATE TABLE IF NOT EXISTS tbl_user (
         id VARCHAR(255) PRIMARY KEY,
@@ -71,15 +43,16 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
         createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    // Monthly quota counters (added after tbl_user first shipped, so they must
-    // be guarded ALTERs for already-created databases — the CREATE above only
-    // covers fresh installs).
     await ensureColumn(conn, 'tbl_user', 'monthlySignsUsed', 'INT NOT NULL DEFAULT 0 AFTER dailyOpsResetAt');
     await ensureColumn(conn, 'tbl_user', 'monthlySignsResetAt', 'DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) AFTER monthlySignsUsed');
     await ensureColumn(conn, 'tbl_user', 'monthlyAiUsed', 'INT NOT NULL DEFAULT 0 AFTER monthlySignsResetAt');
     await ensureColumn(conn, 'tbl_user', 'monthlyAiResetAt', 'DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) AFTER monthlyAiUsed');
+    await ensureColumn(conn, 'tbl_user', 'emailVerified', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER name');
+    await ensureColumn(conn, 'tbl_user', 'emailVerifyToken', 'VARCHAR(64) NULL AFTER emailVerified');
+    await ensureColumn(conn, 'tbl_user', 'emailVerifyExpiresAt', 'DATETIME(3) NULL AFTER emailVerifyToken');
+    await ensureColumn(conn, 'tbl_user', 'authProvider', "VARCHAR(20) NOT NULL DEFAULT 'password' AFTER emailVerifyExpiresAt");
+    await ensureIndex(conn, 'tbl_user', 'idx_user_email_verify_token', 'emailVerifyToken');
 
-    // 2. Job table -> tbl_job
     await conn.query(`
       CREATE TABLE IF NOT EXISTS tbl_job (
         id VARCHAR(255) PRIMARY KEY,
@@ -97,7 +70,6 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // 3. Subscription table -> tbl_subscription
     await conn.query(`
       CREATE TABLE IF NOT EXISTS tbl_subscription (
         id VARCHAR(255) PRIMARY KEY,
@@ -109,14 +81,29 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // Performance indexes (idempotent — safe on existing databases too).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS tbl_cloud_integration (
+        id VARCHAR(255) PRIMARY KEY,
+        userId VARCHAR(255) NOT NULL,
+        provider VARCHAR(50) NOT NULL,
+        accountEmail VARCHAR(255) NOT NULL,
+        accessToken TEXT NOT NULL,
+        refreshToken TEXT NULL,
+        autoSync TINYINT(1) DEFAULT 1,
+        lastSyncAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+        createdAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+        updatedAt DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        UNIQUE KEY idx_user_provider (userId, provider),
+        FOREIGN KEY (userId) REFERENCES tbl_user(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
     await ensureIndex(conn, 'tbl_job', 'idx_job_expiresAt', 'expiresAt');
     await ensureIndex(conn, 'tbl_job', 'idx_job_status', 'status');
     await ensureIndex(conn, 'tbl_job', 'idx_job_user_created', 'userId, createdAt');
     await ensureIndex(conn, 'tbl_subscription', 'idx_sub_razorpay', 'razorpaySubId');
+    await ensureIndex(conn, 'tbl_cloud_integration', 'idx_cloud_user', 'userId');
 
-    // Signing module tables (tbl_sign_*). Runs after tbl_user exists — the
-    // signing tables have a foreign key onto it.
     await initializeSigningSchema(conn);
 
     logger.info('Prefixed database tables (tbl_) initialization complete.');
@@ -127,3 +114,6 @@ async function initializeDatabase(dbPool: mysql.Pool): Promise<void> {
     conn.release();
   }
 }
+
+/** Re-export connection type for transaction callers. */
+export type { PoolConnection };

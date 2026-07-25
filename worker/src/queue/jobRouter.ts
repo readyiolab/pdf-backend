@@ -1,7 +1,7 @@
 import { Job } from 'bullmq';
 import { JobPayload } from '../../../shared/types';
 import { logger } from '../lib/logger';
-import { getPool } from '../lib/mysql';
+import { db } from '../lib/mysql';
 import { env } from '../config/env';
 import { scanFile } from '../lib/clamav';
 import { downloadFromS3, cleanupLocalFile, deleteFromS3 } from '../storage/s3';
@@ -44,13 +44,12 @@ async function scanInputs(jobId: string, inputFiles: string[]): Promise<void> {
 
 export async function jobRouter(job: Job<JobPayload>): Promise<void> {
   const { jobId, tool, inputFiles, options } = job.data;
-  const pool = getPool();
 
   logger.info({ jobId, tool }, 'Worker: Starting processing job');
 
   // 1. Update job status to PROCESSING in MySQL -> tbl_job
   try {
-    await pool.query('UPDATE tbl_job SET status = "PROCESSING" WHERE id = ?', [jobId]);
+    await db.execute('UPDATE tbl_job SET status = "PROCESSING" WHERE id = ?', [jobId]);
   } catch (dbErr) {
     logger.error({ jobId, dbErr }, 'Failed to update job status to PROCESSING in DB');
   }
@@ -104,7 +103,7 @@ export async function jobRouter(job: Job<JobPayload>): Promise<void> {
     logger.info({ jobId, tool, outputFileKey: result.outputFileKey }, 'Worker: Job completed successfully');
 
     // 3. Update status to COMPLETED -> tbl_job
-    await pool.query(
+    await db.execute(
       'UPDATE tbl_job SET status = "COMPLETED", completedAt = ?, outputFile = ? WHERE id = ?',
       [new Date(), result.outputFileKey, jobId]
     );
@@ -121,7 +120,7 @@ export async function jobRouter(job: Job<JobPayload>): Promise<void> {
       // 4. Terminal failure — record it and immediately purge the inputs so we
       //    don't wait for the scheduled sweep to reclaim storage.
       try {
-        await pool.query(
+        await db.execute(
           'UPDATE tbl_job SET status = "FAILED", errorMessage = ?, completedAt = ? WHERE id = ?',
           [errorMsg, new Date(), jobId]
         );

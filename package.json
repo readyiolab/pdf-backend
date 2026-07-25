@@ -7,6 +7,7 @@
     "worker"
   ],
   "scripts": {
+    "start": "npm run dev",
     "dev:api": "npm --workspace=api run dev",
     "dev:worker": "npm --workspace=worker run dev",
     "dev": "concurrently \"npm run dev:api\" \"npm run dev:worker\"",

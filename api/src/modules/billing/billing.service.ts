@@ -1,4 +1,4 @@
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { razorpay } from '../../lib/razorpay';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { env } from '../../config/env';
@@ -12,7 +12,6 @@ export const billingService = {
     }
 
     const { planId } = input;
-    const pool = getPool();
 
     try {
       // 1. Create Subscription on Razorpay
@@ -27,19 +26,23 @@ export const billingService = {
       });
 
       // 2. Record/Update subscription locally in DB -> tbl_subscription
-      const [existingSubs]: any = await pool.query('SELECT * FROM tbl_subscription WHERE userId = ?', [userId]);
-      
-      if (existingSubs.length > 0) {
-        await pool.query(
-          'UPDATE tbl_subscription SET razorpaySubId = ?, status = ? WHERE userId = ?',
-          [subscription.id, subscription.status, userId]
+      const existingSub = await db.select('tbl_subscription', '*', 'userId = ?', [userId]);
+
+      if (existingSub) {
+        await db.update(
+          'tbl_subscription',
+          { razorpaySubId: subscription.id, status: subscription.status },
+          'userId = ?',
+          [userId]
         );
       } else {
         const subId = crypto.randomUUID();
-        await pool.query(
-          'INSERT INTO tbl_subscription (id, userId, razorpaySubId, status) VALUES (?, ?, ?, ?)',
-          [subId, userId, subscription.id, subscription.status]
-        );
+        await db.insert('tbl_subscription', {
+          id: subId,
+          userId,
+          razorpaySubId: subscription.id,
+          status: subscription.status,
+        });
       }
 
       return {
@@ -53,9 +56,7 @@ export const billingService = {
   },
 
   async getSubscriptionStatus(userId: string) {
-    const pool = getPool();
-    const [subs]: any = await pool.query('SELECT * FROM tbl_subscription WHERE userId = ?', [userId]);
-    const subscription = subs[0];
+    const subscription = await db.select('tbl_subscription', '*', 'userId = ?', [userId]);
 
     if (!subscription) {
       return { plan: 'FREE', status: 'none' };

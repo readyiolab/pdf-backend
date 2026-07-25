@@ -198,10 +198,37 @@ export async function initializeSigningSchema(conn: PoolConnection): Promise<voi
   // Query-path indexes (idempotent — safe on existing databases too).
   await ensureIndex(conn, 'tbl_sign_document', 'idx_sign_doc_owner_status', 'ownerId, status');
   await ensureIndex(conn, 'tbl_sign_document', 'idx_sign_doc_owner_created', 'ownerId, createdAt');
+  await ensureIndex(conn, 'tbl_sign_document', 'idx_sign_doc_owner_updated', 'ownerId, updatedAt');
+  await ensureIndex(conn, 'tbl_sign_document', 'idx_sign_doc_owner_status_updated', 'ownerId, status, updatedAt');
   await ensureIndex(conn, 'tbl_sign_document', 'idx_sign_doc_status_expires', 'status, expiresAt');
   await ensureIndex(conn, 'tbl_sign_recipient', 'idx_sign_recipient_order', 'documentId, signingOrder');
+  await ensureIndex(conn, 'tbl_sign_recipient', 'idx_sign_recipient_doc_status', 'documentId, status');
   await ensureIndex(conn, 'tbl_sign_field', 'idx_sign_field_doc_page', 'documentId, page');
   await ensureIndex(conn, 'tbl_sign_audit', 'idx_sign_audit_doc_created', 'documentId, createdAt');
+  await ensureIndex(conn, 'tbl_sign_audit', 'idx_sign_audit_doc_created_id', 'documentId, createdAt, id');
+
+  // Templates — reusable recipient roles + field layouts (PDF cloned on save).
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS tbl_sign_template (
+      id VARCHAR(255) PRIMARY KEY,
+      ownerId VARCHAR(255) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      message TEXT NULL,
+      flowType VARCHAR(50) NOT NULL DEFAULT 'SEQUENTIAL',
+      fileKey VARCHAR(512) NOT NULL,
+      fileName VARCHAR(255) NOT NULL,
+      fileSize BIGINT NOT NULL DEFAULT 0,
+      pageCount INT NOT NULL DEFAULT 0,
+      originalHash CHAR(64) NULL,
+      recipientsJson JSON NOT NULL,
+      fieldsJson JSON NOT NULL,
+      createdAt DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updatedAt DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      INDEX idx_sign_template_owner (ownerId),
+      INDEX idx_sign_template_owner_updated (ownerId, updatedAt),
+      FOREIGN KEY (ownerId) REFERENCES tbl_user(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
 
   logger.info('Signing tables (tbl_sign_*) initialization complete.');
 }

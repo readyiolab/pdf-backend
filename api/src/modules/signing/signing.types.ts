@@ -35,7 +35,7 @@ export const createDocumentSchema = z.object({
 export const listDocumentsSchema = z.object({
   query: z.object({
     status: z
-      .enum(['DRAFT', 'SENT', 'COMPLETED', 'DECLINED', 'EXPIRED', 'VOIDED'])
+      .enum(['DRAFT', 'SENT', 'FINALIZING', 'COMPLETED', 'DECLINED', 'EXPIRED', 'VOIDED'])
       .optional(),
     search: z.string().max(200).optional(),
     page: z.coerce.number().int().positive().default(1),
@@ -135,6 +135,7 @@ const fieldConfigSchema = z
     placeholder: z.string().max(200).optional(),
     defaultValue: z.string().max(2000).optional(),
     options: z.array(z.string().max(200)).max(100).optional(),
+    group: z.string().max(100).optional(),
     validation: z
       .object({
         minLength: z.number().int().min(0).optional(),
@@ -226,6 +227,36 @@ export const auditQuerySchema = z.object({
   }),
 });
 
+export const createTemplateSchema = z.object({
+  body: z.object({
+    documentId: z.string().uuid('Invalid document id'),
+    name: z.string().min(1).max(SIGNING_LIMITS.maxTitleLength).optional(),
+  }),
+});
+
+export const templateIdSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid template id'),
+  }),
+});
+
+export const useTemplateSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid template id'),
+  }),
+  body: z.object({
+    recipients: z
+      .array(
+        z.object({
+          email: z.string().email().max(255),
+          name: z.string().min(1).max(255).optional(),
+        })
+      )
+      .min(1)
+      .max(SIGNING_LIMITS.maxRecipientsPerDocument),
+  }),
+});
+
 export type PresignDocumentInput = z.infer<typeof presignDocumentSchema>['body'];
 export type CreateDocumentInput = z.infer<typeof createDocumentSchema>['body'];
 export type ListDocumentsInput = z.infer<typeof listDocumentsSchema>['query'];
@@ -233,3 +264,5 @@ export type UpdateDocumentInput = z.infer<typeof updateDocumentSchema>['body'];
 export type AddRecipientInput = z.infer<typeof addRecipientSchema>['body'];
 export type UpdateRecipientInput = z.infer<typeof updateRecipientSchema>['body'];
 export type SaveFieldsInput = z.infer<typeof saveFieldsSchema>['body'];
+export type CreateTemplateInput = z.infer<typeof createTemplateSchema>['body'];
+export type UseTemplateInput = z.infer<typeof useTemplateSchema>['body'];

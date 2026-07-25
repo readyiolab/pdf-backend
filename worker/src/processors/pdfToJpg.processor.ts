@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import archiver from 'archiver';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { executeBinary } from '../lib/exec';
+import { resolvePdftoppm } from '../lib/binaries';
 import { logger } from '../lib/logger';
 import { PdfToJpgOptions } from '../../../shared/types';
 
@@ -41,7 +42,7 @@ export async function pdfToJpgProcessor(
     ];
 
     // 2. Run pdftoppm
-    await executeBinary('pdftoppm', args);
+    await executeBinary(resolvePdftoppm(), args);
 
     // 3. Find all generated JPG files
     const dirFiles = fs.readdirSync(tempDir);

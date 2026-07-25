@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import path from 'path';
 import { promisify } from 'util';
 import { logger } from './logger';
 
@@ -28,12 +29,31 @@ export async function executeBinary(
       ...options,
     });
     
+    // Treat known soft-failures: tesseract can exit 0 while only writing .txt
+    // when the pdf config is missing from tessdata.
+    if (typeof stderr === 'string' && /Can't open pdf/i.test(stderr)) {
+      throw new Error(
+        stderr.trim() ||
+          'Tesseract could not open the pdf config. Install tesseract-ocr (system tessdata) or unset TESSDATA_DIR if it points at an incomplete folder.'
+      );
+    }
+
     return { stdout, stderr };
   } catch (err: any) {
     logger.error(
       { binaryPath, err: err.message, code: err.code, stderr: err.stderr },
       'Binary execution failed'
     );
+
+    if (err.code === 'ENOENT') {
+      const name = path.basename(binaryPath).replace(/\.exe$/i, '');
+      throw new Error(
+        `${name} was not found (ENOENT). Install it and ensure it is on PATH, ` +
+          `or set ${name === 'pdftoppm' ? 'PDFTOPPM_PATH' : name === 'tesseract' ? 'TESSERACT_PATH' : 'the binary path'} ` +
+          `in the worker .env. Tried: ${binaryPath}`
+      );
+    }
+
     throw new Error(err.stderr?.trim() || err.message || `Execution of ${binaryPath} failed`);
   }
 }

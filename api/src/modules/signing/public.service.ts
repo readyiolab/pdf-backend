@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { logger } from '../../lib/logger';
 import { getSignedViewUrl } from '../../lib/s3';
 import { AppError } from '../../middleware/errorHandler.middleware';
@@ -11,7 +11,9 @@ import { env } from '../../config/env';
 import { auditService } from './audit.service';
 import { otpService } from './otp.service';
 import { finalizeService } from './finalize.service';
+import { enqueueSignFinalize } from '../../lib/queue';
 import { AUTO_FILLED_FIELD_TYPES, type SignFieldType } from '../../../../shared/signing';
+import { signingService } from './signing.service';
 
 const ACTIONABLE_ROLES = new Set(['SIGNER', 'APPROVER']);
 
@@ -40,18 +42,14 @@ interface ResolvedToken {
  * would turn it into an oracle for probing which tokens exist.
  */
 async function resolveToken(token: string): Promise<ResolvedToken> {
-  const pool = getPool();
-
   // Looked up by unique index rather than compared in JS — the database does a
   // single indexed match, so there is no per-byte timing signal to exploit.
-  const [rows]: any = await pool.query('SELECT * FROM tbl_sign_recipient WHERE signingToken = ?', [token]);
-  const recipient = rows[0];
+  const recipient = await db.select('tbl_sign_recipient', '*', 'signingToken = ?', [token]);
   if (!recipient) {
     throw new AppError('This signing link is invalid or has expired.', 404);
   }
 
-  const [docs]: any = await pool.query('SELECT * FROM tbl_sign_document WHERE id = ?', [recipient.documentId]);
-  const document = docs[0];
+  const document = await db.select('tbl_sign_document', '*', 'id = ?', [recipient.documentId]);
   if (!document) {
     throw new AppError('This signing link is invalid or has expired.', 404);
   }
@@ -62,6 +60,25 @@ async function resolveToken(token: string): Promise<ResolvedToken> {
   if (document.status === 'VOIDED') {
     throw new AppError('This document has been cancelled by the sender.', 410);
   }
+
+  // Lazy expiry: flip overdue SENT docs when a signer opens the link, so we
+  // don't wait solely on the maintenance tick.
+  if (
+    document.status === 'SENT' &&
+    document.expiresAt &&
+    new Date(document.expiresAt).getTime() < Date.now()
+  ) {
+    const expired = await signingService.expireIfOverdue(document.id);
+    if (expired) {
+      await auditService.record(null, {
+        documentId: document.id,
+        action: 'DOCUMENT_EXPIRED',
+        detail: 'Signing deadline passed',
+      });
+    }
+    throw new AppError('This document has expired.', 410);
+  }
+
   if (document.status === 'EXPIRED') {
     throw new AppError('This document has expired.', 410);
   }
@@ -78,16 +95,15 @@ async function assertTurn(document: any, recipient: any): Promise<void> {
   if (document.flowType !== 'SEQUENTIAL') return;
   if (!ACTIONABLE_ROLES.has(recipient.role)) return;
 
-  const [rows]: any = await getPool().query(
-    `SELECT COUNT(1) AS ahead
-       FROM tbl_sign_recipient
-      WHERE documentId = ?
+  const ahead = await db.count(
+    'tbl_sign_recipient',
+    `documentId = ?
         AND role IN ('SIGNER', 'APPROVER')
         AND signingOrder < ?
         AND status <> 'COMPLETED'`,
     [document.id, recipient.signingOrder]
   );
-  if (rows[0].ahead > 0) {
+  if (ahead > 0) {
     throw new AppError(
       'It is not your turn to sign yet. You will be emailed as soon as the people ahead of you have signed.',
       409
@@ -108,14 +124,19 @@ export const publicSigningService = {
   async getSigningView(token: string, req: Request) {
     const { recipient, document } = await resolveToken(token);
 
-    const pool = getPool();
-    const [fields]: any = await pool.query(
-      'SELECT * FROM tbl_sign_field WHERE documentId = ? ORDER BY page ASC, y ASC, x ASC',
-      [document.id]
+    const fields = await db.selectAll(
+      'tbl_sign_field',
+      '*',
+      'documentId = ?',
+      [document.id],
+      'ORDER BY page ASC, y ASC, x ASC'
     );
-    const [allRecipients]: any = await pool.query(
-      'SELECT id, name, role, color, signingOrder, status FROM tbl_sign_recipient WHERE documentId = ? ORDER BY signingOrder ASC',
-      [document.id]
+    const allRecipients = await db.selectAll(
+      'tbl_sign_recipient',
+      'id, name, role, color, signingOrder, status',
+      'documentId = ?',
+      [document.id],
+      'ORDER BY signingOrder ASC'
     );
 
     // First open flips PENDING/SENT → VIEWED and stamps viewedAt. Guarded so a
@@ -123,9 +144,11 @@ export const publicSigningService = {
     // see it" is exactly the question the audit trail exists to answer.
     if (!recipient.viewedAt) {
       const ctx = getRequestContext(req);
-      await pool.query(
-        "UPDATE tbl_sign_recipient SET status = 'VIEWED', viewedAt = ? WHERE id = ? AND viewedAt IS NULL",
-        [new Date(), recipient.id]
+      await db.update(
+        'tbl_sign_recipient',
+        { status: 'VIEWED', viewedAt: new Date() },
+        'id = ? AND viewedAt IS NULL',
+        [recipient.id]
       );
       await auditService.record(req, {
         documentId: document.id,
@@ -139,10 +162,12 @@ export const publicSigningService = {
     }
 
     const requiresOtp = recipient.authMethod === 'EMAIL_OTP' || recipient.authMethod === 'SMS_OTP';
-    const isVerified = !requiresOtp || Boolean(recipient.otpVerifiedAt);
+    const requiresAccessCode = recipient.authMethod === 'ACCESS_CODE';
+    const requiresAuth = requiresOtp || requiresAccessCode;
+    const isVerified = !requiresAuth || Boolean(recipient.otpVerifiedAt);
 
     // The file URL is withheld until the challenge is passed. Handing it over
-    // first would make the OTP decorative — the document would already be
+    // first would make the OTP/access code decorative — the document would already be
     // readable by anyone holding the link.
     const fileUrl = isVerified ? await getSignedViewUrl(document.fileKey, 3600) : null;
 
@@ -159,14 +184,13 @@ export const publicSigningService = {
       recipient: {
         id: recipient.id,
         name: recipient.name,
-        email: recipient.email, // their own address — used to show "signing as …"
+        email: recipient.email,
         role: recipient.role,
         color: recipient.color,
         status: recipient.status,
         authMethod: recipient.authMethod,
         completedAt: recipient.completedAt,
       },
-      // Names only. No emails, no tokens.
       participants: allRecipients.map((r: any) => ({
         id: r.id,
         name: r.name,
@@ -187,12 +211,11 @@ export const publicSigningService = {
         height: f.height,
         required: Boolean(f.required),
         config: typeof f.config === 'string' ? JSON.parse(f.config || '{}') : (f.config ?? {}),
-        // Values are visible so a signer can see what previous parties entered,
-        // but only their own fields are editable (enforced on submit, not here).
         value: f.value,
         isMine: f.recipientId === recipient.id,
       })),
       requiresOtp,
+      requiresAccessCode,
       isVerified,
       fileUrl,
     };
@@ -256,6 +279,51 @@ export const publicSigningService = {
     };
   },
 
+  /** Verifies an access code and returns a short-lived signing session. */
+  async verifyAccessCode(token: string, code: string, req: Request) {
+    const bcrypt = (await import('bcrypt')).default;
+    const { recipient, document } = await resolveToken(token);
+
+    if (recipient.authMethod !== 'ACCESS_CODE') {
+      throw new AppError('This document does not require an access code.', 400);
+    }
+    if (!recipient.accessCodeHash) {
+      throw new AppError('Access code is not configured for this recipient.', 500);
+    }
+
+    const ok = await bcrypt.compare(code, recipient.accessCodeHash);
+    if (!ok) {
+      await auditService.record(req, {
+        documentId: document.id,
+        recipientId: recipient.id,
+        actorEmail: recipient.email,
+        actorName: recipient.name,
+        action: 'AUTH_FAILED',
+        detail: 'Incorrect access code',
+      });
+      throw new AppError('Incorrect access code.', 401);
+    }
+
+    await db.execute(
+      'UPDATE tbl_sign_recipient SET otpVerifiedAt = COALESCE(otpVerifiedAt, ?) WHERE id = ?',
+      [new Date(), recipient.id]
+    );
+
+    await auditService.record(req, {
+      documentId: document.id,
+      recipientId: recipient.id,
+      actorEmail: recipient.email,
+      actorName: recipient.name,
+      action: 'AUTH_PASSED',
+      detail: `${recipient.name} entered the correct access code`,
+    });
+
+    return {
+      sessionToken: signSigningSession({ recipientId: recipient.id, documentId: document.id }),
+      fileUrl: await getSignedViewUrl(document.fileKey, 3600),
+    };
+  },
+
   /**
    * Submits a signer's field values and completes their part.
    *
@@ -285,8 +353,11 @@ export const publicSigningService = {
       throw new AppError('This document is no longer accepting signatures.', 409);
     }
 
-    const requiresOtp = recipient.authMethod === 'EMAIL_OTP' || recipient.authMethod === 'SMS_OTP';
-    if (requiresOtp) {
+    const requiresAuth =
+      recipient.authMethod === 'EMAIL_OTP' ||
+      recipient.authMethod === 'SMS_OTP' ||
+      recipient.authMethod === 'ACCESS_CODE';
+    if (requiresAuth) {
       if (!session || session.recipientId !== recipient.id) {
         throw new AppError('Please verify your identity before signing.', 401);
       }
@@ -297,9 +368,10 @@ export const publicSigningService = {
 
     await assertTurn(document, recipient);
 
-    const pool = getPool();
-    const [fields]: any = await pool.query(
-      'SELECT * FROM tbl_sign_field WHERE documentId = ? AND recipientId = ?',
+    const fields = await db.selectAll(
+      'tbl_sign_field',
+      '*',
+      'documentId = ? AND recipientId = ?',
       [document.id, recipient.id]
     );
 
@@ -343,16 +415,26 @@ export const publicSigningService = {
       resolved.push({ id: field.id, value });
     }
 
-    const conn = await pool.getConnection();
+    const conn = await db.beginTransaction();
     try {
-      await conn.beginTransaction();
-
-      for (const { id, value } of resolved) {
-        await conn.query('UPDATE tbl_sign_field SET value = ?, filledAt = ? WHERE id = ?', [
-          value,
-          value === null ? null : now,
-          id,
-        ]);
+      if (resolved.length > 0) {
+        // Single multi-row UPDATE instead of N round-trips.
+        const ids = resolved.map((r) => r.id);
+        const valueCases = resolved.map(() => 'WHEN ? THEN ?').join(' ');
+        const filledCases = resolved.map(() => 'WHEN ? THEN ?').join(' ');
+        const valueParams: any[] = [];
+        const filledParams: any[] = [];
+        for (const { id, value } of resolved) {
+          valueParams.push(id, value);
+          filledParams.push(id, value === null ? null : now);
+        }
+        await conn.query(
+          `UPDATE tbl_sign_field
+              SET value = CASE id ${valueCases} END,
+                  filledAt = CASE id ${filledCases} END
+            WHERE id IN (${ids.map(() => '?').join(',')})`,
+          [...valueParams, ...filledParams, ...ids]
+        );
       }
 
       await conn.query(
@@ -362,12 +444,10 @@ export const publicSigningService = {
         [now, ctx.ipAddress, [ctx.browser, ctx.os, ctx.device].filter(Boolean).join(' · ') || null, recipient.id]
       );
 
-      await conn.commit();
+      await db.commit(conn);
     } catch (err) {
-      await conn.rollback();
+      await db.rollback(conn);
       throw err;
-    } finally {
-      conn.release();
     }
 
     await auditService.record(req, {
@@ -382,20 +462,41 @@ export const publicSigningService = {
 
     // Burn the token. The signer is done, and leaving a live bearer credential
     // to a signed agreement in an inbox serves no one.
-    await pool.query(
-      'UPDATE tbl_sign_recipient SET signingToken = NULL, tokenExpiresAt = NULL WHERE id = ?',
+    await db.update(
+      'tbl_sign_recipient',
+      { signingToken: null, tokenExpiresAt: null },
+      'id = ?',
       [recipient.id]
     );
 
     const allDone = await finalizeService.allSignersComplete(document.id);
+    let documentCompleted = false;
+    let documentFinalizing = false;
     if (allDone) {
-      // A finalization failure must not tell the signer their signature didn't
-      // land — it did, and it's committed. The document simply stays SENT and
-      // can be re-finalized.
+      // Claim SENT → FINALIZING then enqueue. Never seal inside this HTTP request.
       try {
-        await finalizeService.finalize(document.id);
+        const claimed = await finalizeService.claimForQueue(document.id);
+        if (claimed) {
+          try {
+            await enqueueSignFinalize(document.id);
+          } catch (enqueueErr) {
+            // Don't leave the doc stuck in FINALIZING with no worker job.
+            await db
+              .execute("UPDATE tbl_sign_document SET status = 'SENT', completedAt = NULL WHERE id = ?", [
+                document.id,
+              ])
+              .catch(() => undefined);
+            throw enqueueErr;
+          }
+          documentFinalizing = true;
+          documentCompleted = true;
+        } else {
+          documentCompleted = true;
+          documentFinalizing = true;
+        }
       } catch (err) {
-        logger.error({ err, documentId: document.id }, 'Finalization failed after last signature');
+        logger.error({ err, documentId: document.id }, 'Failed to enqueue finalization after last signature');
+        documentCompleted = true;
       }
     } else if (document.flowType === 'SEQUENTIAL') {
       await notifyNextSigner(document, req).catch((err) =>
@@ -403,7 +504,12 @@ export const publicSigningService = {
       );
     }
 
-    return { status: 'COMPLETED', documentCompleted: allDone };
+    return {
+      status: 'COMPLETED',
+      documentCompleted,
+      documentFinalizing,
+      documentStatus: allDone ? 'FINALIZING' : document.status,
+    };
   },
 
   /** Records a refusal to sign. Terminal for the whole document. */
@@ -417,14 +523,15 @@ export const publicSigningService = {
       throw new AppError('This document is no longer active.', 409);
     }
 
-    const pool = getPool();
-    await pool.query(
-      "UPDATE tbl_sign_recipient SET status = 'DECLINED', declineReason = ?, signingToken = NULL WHERE id = ?",
-      [reason ?? null, recipient.id]
+    await db.update(
+      'tbl_sign_recipient',
+      { status: 'DECLINED', declineReason: reason ?? null, signingToken: null },
+      'id = ?',
+      [recipient.id]
     );
     // One refusal ends the agreement — there is no partial contract to pursue,
     // and the remaining signers should not be asked to sign something already dead.
-    await pool.query("UPDATE tbl_sign_document SET status = 'DECLINED' WHERE id = ?", [document.id]);
+    await db.update('tbl_sign_document', { status: 'DECLINED' }, 'id = ?', [document.id]);
 
     await auditService.record(req, {
       documentId: document.id,
@@ -443,18 +550,16 @@ export const publicSigningService = {
 async function notifyNextSigner(document: any, req: Request): Promise<void> {
   if (!isMailerConfigured()) return;
 
-  const pool = getPool();
-  const [rows]: any = await pool.query(
+  const next = await db.query(
     `SELECT * FROM tbl_sign_recipient
       WHERE documentId = ? AND role IN ('SIGNER','APPROVER') AND status NOT IN ('COMPLETED','DECLINED')
       ORDER BY signingOrder ASC LIMIT 1`,
     [document.id]
   );
-  const next = rows[0];
   if (!next?.signingToken) return;
 
-  const [owners]: any = await pool.query('SELECT name FROM tbl_user WHERE id = ?', [document.ownerId]);
-  const senderName = owners[0]?.name || 'A sender';
+  const owner = await db.select('tbl_user', 'name', 'id = ?', [document.ownerId]);
+  const senderName = owner?.name || 'A sender';
 
   const mail = invitationEmail({
     signerName: next.name,
@@ -467,7 +572,7 @@ async function notifyNextSigner(document: any, req: Request): Promise<void> {
   });
 
   await sendMail({ ...mail, to: next.email });
-  await pool.query("UPDATE tbl_sign_recipient SET status = 'SENT' WHERE id = ?", [next.id]);
+  await db.update('tbl_sign_recipient', { status: 'SENT' }, 'id = ?', [next.id]);
 
   await auditService.record(req, {
     documentId: document.id,

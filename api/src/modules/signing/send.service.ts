@@ -1,4 +1,4 @@
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../middleware/errorHandler.middleware';
@@ -29,10 +29,7 @@ export const sendService = {
    * — so the preconditions are checked hard and up front.
    */
   async send(documentId: string, userId: string, senderName: string): Promise<SendResult> {
-    const pool = getPool();
-
-    const [docs]: any = await pool.query('SELECT * FROM tbl_sign_document WHERE id = ?', [documentId]);
-    const doc = docs[0];
+    const doc = await db.select('tbl_sign_document', '*', 'id = ?', [documentId]);
     if (!doc || doc.ownerId !== userId) {
       throw new AppError('Document not found', 404);
     }
@@ -46,31 +43,39 @@ export const sendService = {
     }
 
     // The owner's plan drives the monthly signing quota reserved below.
-    const [users]: any = await pool.query('SELECT plan FROM tbl_user WHERE id = ?', [userId]);
-    const plan = (users[0]?.plan as 'FREE' | 'PRO') ?? 'FREE';
+    const user = await db.select('tbl_user', 'plan', 'id = ?', [userId]);
+    const plan = (user?.plan as 'FREE' | 'PRO') ?? 'FREE';
     const signLimit = PLAN_LIMITS[plan].maxMonthlySigns;
 
-    const [recipients]: any = await pool.query(
-      'SELECT * FROM tbl_sign_recipient WHERE documentId = ? ORDER BY signingOrder ASC, createdAt ASC',
-      [documentId]
+    const recipients = await db.selectAll(
+      'tbl_sign_recipient',
+      '*',
+      'documentId = ?',
+      [documentId],
+      'ORDER BY signingOrder ASC, createdAt ASC'
     );
     if (recipients.length === 0) {
       throw new AppError('Add at least one recipient before sending.', 400);
     }
 
-    const [fields]: any = await pool.query(
-      'SELECT id, recipientId, label, type FROM tbl_sign_field WHERE documentId = ?',
+    const fields = await db.selectAll(
+      'tbl_sign_field',
+      'id, recipientId, label, type',
+      'documentId = ?',
       [documentId]
     );
 
-    // A signer with no fields is asked to sign nothing — they would open the
-    // document, find no action, and be stuck. Catch it here, not in support.
+    // A SIGNER with no fields is asked to sign nothing — they would open the
+    // document, find no action, and be stuck. APPROVERs may complete with zero
+    // fields (approve-only). Catch empty SIGNERS here, not in support.
     const signers = recipients.filter((r: any) => ACTIONABLE_ROLES.has(r.role));
     if (signers.length === 0) {
       throw new AppError('Add at least one signer or approver — viewers alone cannot complete a document.', 400);
     }
     const fieldsBySigner = new Set(fields.map((f: any) => f.recipientId).filter(Boolean));
-    const emptySigners = signers.filter((r: any) => !fieldsBySigner.has(r.id));
+    const emptySigners = signers.filter(
+      (r: any) => r.role === 'SIGNER' && !fieldsBySigner.has(r.id)
+    );
     if (emptySigners.length > 0) {
       throw new AppError(
         `${emptySigners.map((r: any) => r.name).join(', ')} ${emptySigners.length === 1 ? 'has' : 'have'} no fields to fill. Place at least one field for each signer.`,
@@ -107,10 +112,8 @@ export const sendService = {
     // on demand would mean a partially-tokenised document if the process died
     // between signatures.
     const tokens = new Map<string, string>();
-    const conn = await pool.getConnection();
+    const conn = await db.beginTransaction();
     try {
-      await conn.beginTransaction();
-
       // Reserve one monthly signing credit atomically, as the FIRST step of the
       // transaction. Mirrors the daily-ops reservation in jobs.service: a single
       // guarded UPDATE avoids the read-modify-write race where two concurrent
@@ -130,7 +133,7 @@ export const sendService = {
         [windowCutoff, windowCutoff, now, userId, windowCutoff, signLimit]
       );
       if (reserve.affectedRows === 0) {
-        await conn.rollback();
+        await db.rollback(conn);
         throw new AppError(
           plan === 'PRO'
             ? `You've reached your monthly limit of ${signLimit} sent documents. It resets on a rolling 30-day basis.`
@@ -151,12 +154,15 @@ export const sendService = {
         "UPDATE tbl_sign_document SET status = 'SENT', sentAt = ?, expiresAt = ? WHERE id = ?",
         [new Date(), expiresAt, documentId]
       );
-      await conn.commit();
+      await db.commit(conn);
     } catch (err) {
-      await conn.rollback();
+      // rollback may have already run on quota failure; ignore double-rollback
+      try {
+        await db.rollback(conn);
+      } catch {
+        /* already released */
+      }
       throw err;
-    } finally {
-      conn.release();
     }
 
     // In a sequential flow only the first signer is notified; the rest are
@@ -174,19 +180,138 @@ export const sendService = {
     return { documentId, status: 'SENT', notified };
   },
 
+  /**
+   * Self-sign path: same validations as send, but the only actionable recipient
+   * must be the owner, no invitation email is sent, and the signing token is
+   * returned so the owner can open `/s/:token` in-app.
+   */
+  async sendSelf(
+    documentId: string,
+    userId: string
+  ): Promise<{ documentId: string; status: string; token: string }> {
+    const doc = await db.select('tbl_sign_document', '*', 'id = ?', [documentId]);
+    if (!doc || doc.ownerId !== userId) {
+      throw new AppError('Document not found', 404);
+    }
+    if (doc.status !== 'DRAFT') {
+      throw new AppError('This document has already been sent.', 409);
+    }
+
+    const user = await db.select('tbl_user', 'plan, email', 'id = ?', [userId]);
+    const plan = (user?.plan as 'FREE' | 'PRO') ?? 'FREE';
+    const signLimit = PLAN_LIMITS[plan].maxMonthlySigns;
+    const resolvedOwnerEmail = String(user?.email || '')
+      .toLowerCase()
+      .trim();
+    if (!resolvedOwnerEmail) {
+      throw new AppError('Your account email is required for self-sign.', 400);
+    }
+
+    const recipients = await db.selectAll(
+      'tbl_sign_recipient',
+      '*',
+      'documentId = ?',
+      [documentId],
+      'ORDER BY signingOrder ASC, createdAt ASC'
+    );
+    if (recipients.length === 0) {
+      throw new AppError('Add yourself as a signer before signing.', 400);
+    }
+
+    const signers = recipients.filter((r: any) => ACTIONABLE_ROLES.has(r.role));
+    if (signers.length !== 1) {
+      throw new AppError(
+        'Self-sign is only available when you are the sole signer or approver on the document.',
+        400
+      );
+    }
+    const self = signers[0];
+    if (String(self.email).toLowerCase() !== resolvedOwnerEmail) {
+      throw new AppError('Self-sign requires you to be listed as the signer with your account email.', 400);
+    }
+
+    const fields = await db.selectAll(
+      'tbl_sign_field',
+      'id, recipientId, label, type',
+      'documentId = ?',
+      [documentId]
+    );
+    const fieldsBySigner = new Set(fields.map((f: any) => f.recipientId).filter(Boolean));
+    if (self.role === 'SIGNER' && !fieldsBySigner.has(self.id)) {
+      throw new AppError('Place at least one field for yourself before signing.', 400);
+    }
+    const orphaned = fields.filter((f: any) => !f.recipientId);
+    if (orphaned.length > 0) {
+      throw new AppError(
+        `${orphaned.length} field${orphaned.length === 1 ? ' is' : 's are'} not assigned to anyone. Assign or remove ${orphaned.length === 1 ? 'it' : 'them'} before signing.`,
+        400
+      );
+    }
+
+    const expiresAt = doc.expiresAt
+      ? new Date(doc.expiresAt)
+      : new Date(Date.now() + SIGNING_LIMITS.defaultExpiryDays * 86400_000);
+
+    const token = generateSigningToken();
+    const conn = await db.beginTransaction();
+    try {
+      const now = new Date();
+      const windowCutoff = new Date(now.getTime() - SIGN_WINDOW_MS);
+      const [reserve]: any = await conn.query(
+        `UPDATE tbl_user
+            SET monthlySignsUsed    = IF(monthlySignsResetAt < ?, 1, monthlySignsUsed + 1),
+                monthlySignsResetAt = IF(monthlySignsResetAt < ?, ?, monthlySignsResetAt)
+          WHERE id = ?
+            AND (monthlySignsResetAt < ? OR monthlySignsUsed < ?)`,
+        [windowCutoff, windowCutoff, now, userId, windowCutoff, signLimit]
+      );
+      if (reserve.affectedRows === 0) {
+        await db.rollback(conn);
+        throw new AppError(
+          plan === 'PRO'
+            ? `You've reached your monthly limit of ${signLimit} sent documents. It resets on a rolling 30-day basis.`
+            : `You've reached your free plan's limit of ${signLimit} documents sent for signature this month. Upgrade to PRO to send more.`,
+          403
+        );
+      }
+
+      for (const r of recipients) {
+        const rToken = r.id === self.id ? token : generateSigningToken();
+        await conn.query(
+          'UPDATE tbl_sign_recipient SET signingToken = ?, tokenExpiresAt = ?, status = ? WHERE id = ?',
+          [rToken, expiresAt, r.id === self.id ? 'SENT' : 'PENDING', r.id]
+        );
+      }
+      await conn.query(
+        "UPDATE tbl_sign_document SET status = 'SENT', sentAt = ?, expiresAt = ? WHERE id = ?",
+        [new Date(), expiresAt, documentId]
+      );
+      await db.commit(conn);
+    } catch (err) {
+      try {
+        await db.rollback(conn);
+      } catch {
+        /* already released */
+      }
+      throw err;
+    }
+
+    logger.info({ documentId, userId }, 'Document sent for self-sign (no invitation email)');
+    return { documentId, status: 'SENT', token };
+  },
+
   /** Re-sends the invitation for one recipient. Used by reminders and by hand. */
   async resend(documentId: string, recipientId: string, userId: string, senderName: string) {
-    const pool = getPool();
-    const [docs]: any = await pool.query('SELECT * FROM tbl_sign_document WHERE id = ?', [documentId]);
-    const doc = docs[0];
+    const doc = await db.select('tbl_sign_document', '*', 'id = ?', [documentId]);
     if (!doc || doc.ownerId !== userId) throw new AppError('Document not found', 404);
     if (doc.status !== 'SENT') throw new AppError('This document is not awaiting signature.', 409);
 
-    const [rows]: any = await pool.query(
-      'SELECT * FROM tbl_sign_recipient WHERE id = ? AND documentId = ?',
+    const recipient = await db.select(
+      'tbl_sign_recipient',
+      '*',
+      'id = ? AND documentId = ?',
       [recipientId, documentId]
     );
-    const recipient = rows[0];
     if (!recipient) throw new AppError('Recipient not found', 404);
     if (recipient.status === 'COMPLETED') throw new AppError('This recipient has already signed.', 409);
     if (!recipient.signingToken) throw new AppError('This recipient has not been sent a link yet.', 409);
@@ -218,36 +343,33 @@ async function deliverInvitations(
   senderName: string,
   expiresAt: Date | null
 ): Promise<SendResult['notified']> {
-  const results: SendResult['notified'] = [];
+  const results = await Promise.all(
+    recipients.map(async (r) => {
+      const token = tokens.get(r.id);
+      if (!token) return null;
 
-  for (const r of recipients) {
-    const token = tokens.get(r.id);
-    if (!token) continue;
+      const signUrl = `${env.APP_URL.replace(/\/$/, '')}/s/${token}`;
+      const mail = invitationEmail({
+        signerName: r.name,
+        senderName,
+        documentTitle: doc.title,
+        signUrl,
+        message: doc.message,
+        expiresAt,
+      });
 
-    // `/s/` — NOT `/sign/`, which is the owner's authenticated dashboard and
-    // would bounce a recipient to a login page they have no account for.
-    const signUrl = `${env.APP_URL.replace(/\/$/, '')}/s/${token}`;
-    const mail = invitationEmail({
-      signerName: r.name,
-      senderName,
-      documentTitle: doc.title,
-      signUrl,
-      message: doc.message,
-      expiresAt,
-    });
+      try {
+        await sendMail({ ...mail, to: r.email });
+        await db.update('tbl_sign_recipient', { status: 'SENT' }, 'id = ?', [r.id]);
+        logger.info({ recipientId: r.id, documentId: doc.id }, 'Signing invitation sent');
+        return { recipientId: r.id, email: r.email, delivered: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Delivery failed';
+        logger.error({ err, recipientId: r.id, documentId: doc.id }, 'Failed to send signing invitation');
+        return { recipientId: r.id, email: r.email, delivered: false, error: message };
+      }
+    })
+  );
 
-    try {
-      await sendMail({ ...mail, to: r.email });
-      await getPool().query("UPDATE tbl_sign_recipient SET status = 'SENT' WHERE id = ?", [r.id]);
-      results.push({ recipientId: r.id, email: r.email, delivered: true });
-      logger.info({ recipientId: r.id, documentId: doc.id }, 'Signing invitation sent');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Delivery failed';
-      // Never log the URL — it contains the bearer token.
-      logger.error({ err, recipientId: r.id, documentId: doc.id }, 'Failed to send signing invitation');
-      results.push({ recipientId: r.id, email: r.email, delivered: false, error: message });
-    }
-  }
-
-  return results;
+  return results.filter((res): res is NonNullable<typeof res> => res !== null);
 }

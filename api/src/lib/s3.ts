@@ -4,6 +4,7 @@ import {
   HeadObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  CopyObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'crypto';
@@ -26,7 +27,8 @@ export const s3 = new S3Client({
  */
 export async function getSignedDownloadUrl(
   key: string,
-  fileName?: string
+  fileName?: string,
+  ttlSeconds: number = env.DOWNLOAD_URL_TTL
 ): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: env.DO_SPACES_BUCKET,
@@ -36,7 +38,18 @@ export async function getSignedDownloadUrl(
       ? `attachment; filename="${fileName.replace(/["\\]/g, '')}"`
       : 'attachment',
   });
-  return getSignedUrl(s3, command, { expiresIn: env.DOWNLOAD_URL_TTL });
+  return getSignedUrl(s3, command, { expiresIn: ttlSeconds });
+}
+
+/** Server-side copy within the same bucket (used when cloning a template PDF). */
+export async function copyObject(sourceKey: string, destKey: string): Promise<void> {
+  await s3.send(
+    new CopyObjectCommand({
+      Bucket: env.DO_SPACES_BUCKET,
+      CopySource: `${env.DO_SPACES_BUCKET}/${sourceKey}`,
+      Key: destKey,
+    })
+  );
 }
 
 /**

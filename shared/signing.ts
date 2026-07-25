@@ -10,6 +10,7 @@
 export type SignDocumentStatus =
   | 'DRAFT' // being prepared by the owner; not yet sent
   | 'SENT' // out for signature, at least one recipient pending
+  | 'FINALIZING' // all signers done; worker is sealing the PDF
   | 'COMPLETED' // every recipient finished
   | 'DECLINED' // a recipient refused
   | 'EXPIRED' // passed expiresAt before completion
@@ -128,6 +129,12 @@ export interface SignFieldConfig {
   defaultValue?: string;
   /** DROPDOWN / RADIO choices. */
   options?: string[];
+  /**
+   * RADIO exclusive group. All RADIO fields sharing the same group (for the
+   * same recipient) are mutually exclusive — selecting one clears the others.
+   * Falls back to the field label when unset.
+   */
+  group?: string;
   /** Zod-ish validation hints applied in the signing UI and re-checked server-side. */
   validation?: {
     minLength?: number;
@@ -257,4 +264,6 @@ export const SIGNING_LIMITS = {
   maxFileSize: 50 * 1024 * 1024,
   /** Default validity of a signing invitation, in days. */
   defaultExpiryDays: 30,
+  /** Completion-email download links stay valid this long (S3 max is 7 days). */
+  completionDownloadTtlSeconds: 7 * 24 * 60 * 60,
 } as const;

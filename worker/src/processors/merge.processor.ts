@@ -18,11 +18,9 @@ export async function mergeProcessor(
   let mergedLocalPath = '';
 
   try {
-    // 1. Download all files from S3
-    for (const key of inputFileKeys) {
-      const localPath = await downloadFromS3(key);
-      localPaths.push(localPath);
-    }
+    // 1. Download all files from S3 concurrently
+    const downloaded = await Promise.all(inputFileKeys.map((key) => downloadFromS3(key)));
+    localPaths.push(...downloaded);
 
     // 2. Sort files if order is provided
     let sortedPaths = [...localPaths];

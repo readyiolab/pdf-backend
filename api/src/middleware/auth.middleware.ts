@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { getPool } from '../lib/mysql';
+import { db } from '../lib/mysql';
 import { verifyToken, isTokenRevoked } from '../lib/jwt';
 import { getCachedUser, setCachedUser, CachedUser } from '../lib/userCache';
 import { AppError } from './errorHandler.middleware';
@@ -12,6 +12,7 @@ declare global {
         id: string;
         plan: 'FREE' | 'PRO';
         isGuest: boolean;
+        emailVerified: boolean;
       };
       // The raw token claims, used by logout to revoke this exact token.
       tokenJti?: string;
@@ -32,11 +33,33 @@ declare global {
  */
 export const requireFullAccount = (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): void => {
   if (req.user?.isGuest) {
     next(new AppError('Please create an account to use document signing.', 403));
+    return;
+  }
+  next();
+};
+
+/**
+ * Blocks unverified email/password accounts from protected features.
+ * Guests are already verified=true at provision time; Google users are verified.
+ * Must run after authMiddleware.
+ */
+export const requireVerifiedEmail = (
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): void => {
+  if (req.user && !req.user.isGuest && !req.user.emailVerified) {
+    next(
+      new AppError(
+        'Please verify your email before using this feature. Check your inbox for a verification link.',
+        403
+      )
+    );
     return;
   }
   next();
@@ -55,19 +78,13 @@ export const authMiddleware = async (
 
     const token = authHeader.split(' ')[1];
 
-    // Verify token signature/expiry
     let decoded;
     try {
       decoded = verifyToken(token);
-    } catch (err) {
+    } catch {
       throw new AppError('Invalid or expired authentication token', 401);
     }
 
-    // Reject tokens that have been explicitly revoked (e.g. via logout).
-    // Redis errors here are non-fatal: revocation is a defense-in-depth check
-    // on top of JWT signature/expiry verification, not the primary boundary,
-    // so we fail open rather than taking down all authenticated traffic on a
-    // Redis outage/quota error.
     let revoked = false;
     try {
       revoked = decoded.jti ? await isTokenRevoked(decoded.jti) : false;
@@ -78,9 +95,6 @@ export const authMiddleware = async (
       throw new AppError('This session has been logged out', 401);
     }
 
-    // Resolve the user, preferring a short-TTL cache to keep MySQL off the hot
-    // path. A cache miss (or a Redis error reading it) falls back to the DB;
-    // a Redis error writing it back is a non-fatal cache-population failure.
     let cached: CachedUser | null = null;
     try {
       cached = await getCachedUser(decoded.userId);
@@ -88,15 +102,15 @@ export const authMiddleware = async (
       logger.warn({ err }, 'Redis unavailable, skipping user cache read');
     }
     if (!cached) {
-      const pool = getPool();
-      const [users]: any = await pool.query('SELECT id, plan FROM tbl_user WHERE id = ?', [
-        decoded.userId,
-      ]);
-      const user = users[0];
+      const user = await db.select('tbl_user', 'id, plan, emailVerified', 'id = ?', [decoded.userId]);
       if (!user) {
         throw new AppError('The user belonging to this token no longer exists', 401);
       }
-      cached = { id: user.id, plan: user.plan as 'FREE' | 'PRO' };
+      cached = {
+        id: user.id,
+        plan: user.plan as 'FREE' | 'PRO',
+        emailVerified: Boolean(user.emailVerified),
+      };
       try {
         await setCachedUser(cached);
       } catch (err) {
@@ -104,11 +118,11 @@ export const authMiddleware = async (
       }
     }
 
-    // Attach user to request
     req.user = {
       id: cached.id,
       plan: cached.plan,
       isGuest: Boolean(decoded.isGuest),
+      emailVerified: cached.emailVerified,
     };
     req.tokenJti = decoded.jti;
     req.tokenExp = decoded.exp;

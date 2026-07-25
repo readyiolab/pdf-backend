@@ -1,5 +1,5 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { AppError } from '../../middleware/errorHandler.middleware';
 
 const PAGE_W = 595.28; // A4 portrait, points
@@ -154,23 +154,22 @@ export const certificateService = {
    * out on the page: a certificate nobody can interpret is decoration.
    */
   async build(documentId: string): Promise<Buffer> {
-    const pool = getPool();
-
-    const [docs]: any = await pool.query('SELECT * FROM tbl_sign_document WHERE id = ?', [documentId]);
-    const doc = docs[0];
+    const doc = await db.select('tbl_sign_document', '*', 'id = ?', [documentId]);
     if (!doc) throw new AppError('Document not found', 404);
 
-    const [recipients]: any = await pool.query(
-      'SELECT * FROM tbl_sign_recipient WHERE documentId = ? ORDER BY signingOrder ASC, createdAt ASC',
-      [documentId]
+    const recipients = await db.selectAll(
+      'tbl_sign_recipient',
+      '*',
+      'documentId = ?',
+      [documentId],
+      'ORDER BY signingOrder ASC, createdAt ASC'
     );
-    const [audit]: any = await pool.query(
+    const audit = await db.queryAll(
       `SELECT action, actorName, actorEmail, detail, ipAddress, browser, os, createdAt
          FROM tbl_sign_audit WHERE documentId = ? ORDER BY createdAt ASC`,
       [documentId]
     );
-    const [owners]: any = await pool.query('SELECT name, email FROM tbl_user WHERE id = ?', [doc.ownerId]);
-    const owner = owners[0] ?? {};
+    const owner: any = (await db.select('tbl_user', 'name, email', 'id = ?', [doc.ownerId])) ?? {};
 
     const pdf = await PDFDocument.create();
     const fonts: Fonts = {

@@ -1,4 +1,4 @@
-import { getPool } from '../../lib/mysql';
+import { db } from '../../lib/mysql';
 import { pushToQueue } from '../../lib/queue';
 import {
   getSignedDownloadUrl,
@@ -27,48 +27,45 @@ async function validateInputs(
 ): Promise<void> {
   const allowed = TOOL_INPUT_TYPES[tool];
 
-  for (const key of inputFiles) {
-    let size: number;
-    try {
-      size = await headObjectSize(key);
-    } catch {
-      throw new AppError('An uploaded file could not be found. Please re-upload.', 400);
-    }
+  await Promise.all(
+    inputFiles.map(async (key) => {
+      let size: number;
+      try {
+        size = await headObjectSize(key);
+      } catch {
+        throw new AppError('An uploaded file could not be found. Please re-upload.', 400);
+      }
 
-    if (size <= 0) {
-      await deleteObject(key);
-      throw new AppError('An uploaded file is empty.', 400);
-    }
-    if (size > maxFileSize) {
-      await deleteObject(key);
-      const maxMb = Math.floor(maxFileSize / (1024 * 1024));
-      throw new AppError(`A file exceeds your plan limit of ${maxMb}MB.`, 400);
-    }
+      if (size <= 0) {
+        await deleteObject(key);
+        throw new AppError('An uploaded file is empty.', 400);
+      }
+      if (size > maxFileSize) {
+        await deleteObject(key);
+        const maxMb = Math.floor(maxFileSize / (1024 * 1024));
+        throw new AppError(`A file exceeds your plan limit of ${maxMb}MB.`, 400);
+      }
 
-    const head = await readObjectHead(key, 1024);
-    const category = detectFileCategory(head);
-    if (!allowed.includes(category)) {
-      await deleteObject(key);
-      throw new AppError(
-        `An uploaded file is not a valid input for this tool.`,
-        400
-      );
-    }
-  }
+      const head = await readObjectHead(key, 1024);
+      const category = detectFileCategory(head);
+      if (!allowed.includes(category)) {
+        await deleteObject(key);
+        throw new AppError(
+          `An uploaded file is not a valid input for this tool.`,
+          400
+        );
+      }
+    })
+  );
 }
 
 export const jobsService = {
   async createJob(userId: string, input: CreateJobInput) {
     const { tool, inputFiles, options } = input;
-    const pool = getPool();
 
     // 1. Fetch the authenticated user. authMiddleware guarantees the user exists,
     //    so a miss here is a real error — never auto-create accounts.
-    const [users]: any = await pool.query(
-      'SELECT id, plan FROM tbl_user WHERE id = ?',
-      [userId]
-    );
-    const user = users[0];
+    const user = await db.select('tbl_user', 'id, plan', 'id = ?', [userId]);
     if (!user) {
       throw new AppError('User not found', 404);
     }
@@ -86,7 +83,7 @@ export const jobsService = {
     //    - If the 24h window has elapsed, the counter resets to 1 and the window rolls.
     //    - Otherwise it increments only while still under the plan limit.
     //    (dailyOpsUsed is assigned first so it reads the ORIGINAL dailyOpsResetAt.)
-    const [reserve]: any = await pool.query(
+    const reserve = await db.execute(
       `UPDATE tbl_user
          SET dailyOpsUsed   = IF(dailyOpsResetAt < ?, 1, dailyOpsUsed + 1),
              dailyOpsResetAt = IF(dailyOpsResetAt < ?, ?, dailyOpsResetAt)
@@ -108,18 +105,22 @@ export const jobsService = {
     const inputFilesStr = JSON.stringify(inputFiles);
 
     try {
-      await pool.query(
-        'INSERT INTO tbl_job (id, userId, tool, status, inputFiles, expiresAt) VALUES (?, ?, ?, ?, ?, ?)',
-        [jobId, user.id, tool, 'QUEUED', inputFilesStr, expiresAt]
-      );
+      await db.insert('tbl_job', {
+        id: jobId,
+        userId: user.id,
+        tool,
+        status: 'QUEUED',
+        inputFiles: inputFilesStr,
+        expiresAt,
+      });
 
       // 5. Push to BullMQ queue (PRO users get higher priority)
       await pushToQueue(jobId, user.id, tool as ToolName, inputFiles, options, user.plan);
     } catch (err) {
       // Compensate the reserved operation if we failed to enqueue the job so the
       // user is not charged for work that never ran.
-      await pool
-        .query(
+      await db
+        .execute(
           'UPDATE tbl_user SET dailyOpsUsed = GREATEST(dailyOpsUsed - 1, 0) WHERE id = ?',
           [user.id]
         )
@@ -141,10 +142,8 @@ export const jobsService = {
     };
   },
 
-  async getJobById(jobId: string, userId: string) {
-    const pool = getPool();
-    const [jobs]: any = await pool.query('SELECT * FROM tbl_job WHERE id = ?', [jobId]);
-    const job = jobs[0];
+  async getJobById(jobId: string, userId: string): Promise<any> {
+    const job: any = await db.select('tbl_job', '*', 'id = ?', [jobId]);
 
     if (!job) {
       throw new AppError('Job not found', 404);
@@ -176,12 +175,7 @@ export const jobsService = {
    * only way to retrieve them.
    */
   async getDownloadUrl(jobId: string, userId: string): Promise<{ url: string }> {
-    const pool = getPool();
-    const [jobs]: any = await pool.query(
-      'SELECT userId, status, outputFile FROM tbl_job WHERE id = ?',
-      [jobId]
-    );
-    const job = jobs[0];
+    const job = await db.select('tbl_job', 'userId, status, outputFile', 'id = ?', [jobId]);
 
     if (!job) {
       throw new AppError('Job not found', 404);

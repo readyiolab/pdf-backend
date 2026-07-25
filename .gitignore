@@ -12,6 +12,7 @@ build/
 
 # Local temp directories used by workers for PDF processing
 temp/
+tessdata/
 *.pdf
 *.jpg
 *.zip

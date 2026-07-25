@@ -2,12 +2,13 @@ import { Request, Response, NextFunction } from 'express';
 import { signingService } from './signing.service';
 import { auditService } from './audit.service';
 import { sendService } from './send.service';
-import { getPool } from '../../lib/mysql';
+import { templateService } from './template.service';
+import { db } from '../../lib/mysql';
 
 /** The sender's display name, as recipients will see it in the invitation. */
 async function getSenderName(userId: string): Promise<string> {
-  const [rows]: any = await getPool().query('SELECT name, email FROM tbl_user WHERE id = ?', [userId]);
-  return rows[0]?.name || rows[0]?.email || 'A sender';
+  const row = await db.select('tbl_user', 'name, email', 'id = ?', [userId]);
+  return row?.name || row?.email || 'A sender';
 }
 
 export const signingController = {
@@ -259,6 +260,78 @@ export const signingController = {
       await signingService.assertOwnership(req.params.id, req.user.id);
       const { page, limit } = req.query as any;
       res.status(200).json(await auditService.list(req.params.id, page, limit));
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async sendSelf(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await sendService.sendSelf(req.params.id, req.user.id);
+      await auditService.record(req, {
+        documentId: req.params.id,
+        action: 'DOCUMENT_SENT',
+        actorId: req.user.id,
+        detail: 'Sent for self-sign (in-app, no invitation email)',
+        metadata: { selfSign: true },
+      });
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async voidDocument(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await signingService.voidDocument(req.params.id, req.user.id);
+      await auditService.record(req, {
+        documentId: req.params.id,
+        action: 'DOCUMENT_VOIDED',
+        actorId: req.user.id,
+        detail: 'Document cancelled by sender',
+      });
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async listTemplates(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.status(200).json(await templateService.list(req.user.id));
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async createTemplate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const template = await templateService.createFromDocument(req.user.id, req.body);
+      res.status(201).json(template);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async deleteTemplate(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.status(200).json(await templateService.remove(req.params.id, req.user.id));
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async useTemplate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const doc = await templateService.createDocument(req.params.id, req.user.id, req.body);
+      await auditService.record(req, {
+        documentId: doc.id,
+        action: 'DOCUMENT_CREATED',
+        actorId: req.user.id,
+        detail: `Document created from template`,
+        metadata: { templateId: req.params.id },
+      });
+      res.status(201).json(doc);
     } catch (err) {
       next(err);
     }

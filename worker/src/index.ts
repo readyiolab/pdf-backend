@@ -5,7 +5,7 @@ import { startHeavyWorker } from './queue/heavyQueue.worker';
 import { startLightWorker } from './queue/lightQueue.worker';
 import { startMaintenanceWorker } from './queue/maintenance.worker';
 import { redis } from './lib/redis';
-import { createMysqlPool, getPool } from './lib/mysql';
+import { createMysqlPool, db } from './lib/mysql';
 
 logger.info('Initializing Worker Service...');
 
@@ -22,8 +22,7 @@ app.get('/health', async (req, res) => {
   let redisStatus = 'UP';
 
   try {
-    const pool = getPool();
-    await pool.query('SELECT 1');
+    await db.queryAll('SELECT 1 AS ok');
   } catch (err) {
     dbStatus = 'DOWN';
   }
@@ -78,8 +77,7 @@ const gracefulShutdown = async () => {
 
   // Disconnect MySQL Pool
   try {
-    const pool = getPool();
-    await pool.end();
+    await db.close();
     logger.info('MySQL Pool closed.');
   } catch (err) {
     // Ignore if not initialized

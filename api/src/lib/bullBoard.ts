@@ -4,7 +4,7 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 import crypto from 'crypto';
 import { env } from '../config/env';
-import { heavyQueue, lightQueue, maintenanceQueue, deadQueue } from './queue';
+import { heavyQueue, lightQueue, maintenanceQueue, deadQueue, signFinalizeQueue } from './queue';
 
 const BASE_PATH = '/admin/queues';
 
@@ -50,6 +50,7 @@ export function createDashboard() {
       new BullMQAdapter(lightQueue),
       new BullMQAdapter(maintenanceQueue),
       new BullMQAdapter(deadQueue),
+      new BullMQAdapter(signFinalizeQueue),
     ],
     serverAdapter,
   });

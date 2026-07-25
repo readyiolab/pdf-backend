@@ -7,6 +7,7 @@ import {
   declineSchema,
   signTokenParamSchema,
   verifyOtpSchema,
+  verifyAccessCodeSchema,
 } from './public.types';
 
 /**
@@ -28,6 +29,12 @@ router.get('/:token', validate(signTokenParamSchema), publicSigningController.ge
 
 router.post('/:token/otp', otpRateLimiter, validate(signTokenParamSchema), publicSigningController.requestOtp);
 router.post('/:token/verify-otp', otpRateLimiter, validate(verifyOtpSchema), publicSigningController.verifyOtp);
+router.post(
+  '/:token/verify-access-code',
+  otpRateLimiter,
+  validate(verifyAccessCodeSchema),
+  publicSigningController.verifyAccessCode
+);
 
 router.post('/:token/complete', validate(completeSchema), publicSigningController.complete);
 router.post('/:token/decline', validate(declineSchema), publicSigningController.decline);

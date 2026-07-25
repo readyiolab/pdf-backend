@@ -4,8 +4,11 @@ import path from 'path';
 import crypto from 'crypto';
 import { downloadFromS3, uploadToS3, cleanupLocalFile } from '../storage/s3';
 import { executeBinary } from '../lib/exec';
+import { resolvePdftoppm, resolveTesseract, resolveTessdataDir } from '../lib/binaries';
 import { logger } from '../lib/logger';
 import { OcrOptions } from '../../../shared/types';
+
+const TESSERACT_TIMEOUT_MS = 180_000;
 
 export async function ocrProcessor(
   jobId: string,
@@ -28,13 +31,10 @@ export async function ocrProcessor(
     localInputPath = await downloadFromS3(inputFileKeys[0]);
     const tempDir = path.dirname(localInputPath);
 
-    // 2. Rasterize PDF to JPEGs using pdftoppm
+    // 2. Rasterize PDF to JPEGs using pdftoppm (from poppler-utils on Ubuntu)
     const rasterPrefix = path.join(tempDir, `ocr_raster_${crypto.randomUUID()}`);
-    
-    // pdftoppm -jpeg -r 150 <input> <prefix>
-    await executeBinary('pdftoppm', ['-jpeg', '-r', '150', localInputPath, rasterPrefix]);
+    await executeBinary(resolvePdftoppm(), ['-jpeg', '-r', '150', localInputPath, rasterPrefix]);
 
-    // Find all rasterized files
     const dirFiles = fs.readdirSync(tempDir);
     const prefixBase = path.basename(rasterPrefix);
 
@@ -54,30 +54,38 @@ export async function ocrProcessor(
     rasterFiles.push(...pageImages);
 
     // 3. Run Tesseract on each page image to output a searchable PDF page
+    // Requires: tesseract-ocr + language packs (e.g. tesseract-ocr-eng tesseract-ocr-hin)
     const langArg = options.languages?.join('+') || 'eng';
+    const tessdataDir = resolveTessdataDir();
+    const tesseractBin = resolveTesseract();
 
     for (let i = 0; i < pageImages.length; i++) {
       const imgPath = pageImages[i];
       const ocrOutputBase = path.join(tempDir, `ocr_page_${crypto.randomUUID()}`);
-      
-      // Command: tesseract <img_path> <output_base> -l <lang> pdf
-      await executeBinary('tesseract', [
-        imgPath,
-        ocrOutputBase,
-        '-l',
-        langArg,
-        'pdf',
-      ]);
+
+      // tesseract <image> <outputbase> [-l lang] pdf
+      const tessArgs = [imgPath, ocrOutputBase];
+      if (tessdataDir) {
+        tessArgs.push('--tessdata-dir', tessdataDir);
+      }
+      tessArgs.push('-l', langArg, 'pdf');
+
+      const { stderr } = await executeBinary(tesseractBin, tessArgs, {
+        timeout: TESSERACT_TIMEOUT_MS,
+      });
 
       const expectedPdfPath = `${ocrOutputBase}.pdf`;
       if (!fs.existsSync(expectedPdfPath)) {
-        throw new Error(`Tesseract failed to generate OCR PDF for page ${i + 1}`);
+        const hint = stderr?.trim()
+          ? stderr.trim()
+          : 'Ensure system tessdata includes the pdf config (Ubuntu: apt install tesseract-ocr). Do not set TESSDATA_DIR to a langs-only folder.';
+        throw new Error(`Tesseract failed to generate OCR PDF for page ${i + 1}: ${hint}`);
       }
 
       ocrPageFiles.push(expectedPdfPath);
     }
 
-    // 4. Merge all searchable page PDFs into a single final PDF using pdf-lib
+    // 4. Merge searchable page PDFs
     const mergedOcrPdf = await PDFDocument.create();
 
     for (const pagePdfPath of ocrPageFiles) {
@@ -88,7 +96,7 @@ export async function ocrProcessor(
     }
 
     const mergedBytes = await mergedOcrPdf.save();
-    
+
     mergedOcrPath = path.join(tempDir, `ocr_final_${crypto.randomUUID()}.pdf`);
     await fs.promises.writeFile(mergedOcrPath, mergedBytes);
 
@@ -98,7 +106,6 @@ export async function ocrProcessor(
 
     return { outputFileKey: destinationKey };
   } finally {
-    // Cleanup all local resources
     cleanupLocalFile(localInputPath);
     rasterFiles.forEach((f) => cleanupLocalFile(f));
     ocrPageFiles.forEach((f) => cleanupLocalFile(f));

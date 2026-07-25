@@ -21,7 +21,7 @@ const envSchema = z.object({
   BCRYPT_ROUNDS: z.coerce.number().min(10).max(15).default(12),
 
   // Comma-separated list of allowed browser origins for CORS
-  CORS_ORIGINS: z.string().default('http://localhost:5174,http://localhost:5000'),
+  CORS_ORIGINS: z.string().default('http://localhost:5173,http://localhost:5174,http://localhost:3000,http://localhost:5000,http://127.0.0.1:5173'),
   // Max JSON request body size (protects against large-payload DoS)
   MAX_JSON_BODY: z.string().default('100kb'),
   // Max JSON body for the signing router only. A field-designer save posts the
@@ -68,6 +68,10 @@ const envSchema = z.object({
   // (`${APP_URL}/sign/<token>`). Must be the address recipients can actually
   // reach — defaulting to localhost in production would mail out dead links.
   APP_URL: z.string().url().default('http://localhost:5174'),
+
+  // Google OAuth — required to verify ID tokens (audience check). Without this,
+  // Google sign-in is rejected rather than trusting an unverified email body.
+  GOOGLE_CLIENT_ID: z.string().optional(),
 
   // --- Digital signature (PAdES/PKCS#7) ---
   // The signing certificate applied to the finished PDF so any later edit

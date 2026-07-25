@@ -21,16 +21,31 @@ export const loginSchema = z.object({
   }),
 });
 
+export const verifyEmailSchema = z.object({
+  body: z.object({
+    token: z.string().min(16).max(128),
+  }),
+});
+
+export const googleAuthSchema = z.object({
+  body: z.object({
+    credential: z.string().min(20, 'Google credential is required'),
+  }),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>['body'];
 export type LoginInput = z.infer<typeof loginSchema>['body'];
 
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string | null;
+  plan: 'FREE' | 'PRO';
+  emailVerified: boolean;
+  isGuest?: boolean;
+}
+
 export interface AuthResponse {
   token: string;
-  user: {
-    id: string;
-    email: string;
-    name: string | null;
-    plan: 'FREE' | 'PRO';
-    isGuest?: boolean;
-  };
+  user: AuthUser;
 }

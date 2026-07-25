@@ -45,6 +45,16 @@ export const publicSigningController = {
     }
   },
 
+  async verifyAccessCode(req: Request, res: Response, next: NextFunction) {
+    try {
+      res
+        .status(200)
+        .json(await publicSigningService.verifyAccessCode(req.params.token, req.body.code, req));
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async complete(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await publicSigningService.complete(

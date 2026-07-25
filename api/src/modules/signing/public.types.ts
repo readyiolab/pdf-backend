@@ -19,6 +19,13 @@ export const verifyOtpSchema = z.object({
   }),
 });
 
+export const verifyAccessCodeSchema = z.object({
+  params: z.object({ token: signingToken }),
+  body: z.object({
+    code: z.string().min(4).max(64),
+  }),
+});
+
 export const completeSchema = z.object({
   params: z.object({ token: signingToken }),
   body: z.object({
