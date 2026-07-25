@@ -8,6 +8,7 @@ import { RegisterInput, LoginInput, AuthResponse } from './auth.types';
 import { isMailerConfigured, sendMail } from '../../lib/mailer';
 import { logger } from '../../lib/logger';
 import { invalidateUser } from '../../lib/userCache';
+import { isGoogleAuthConfigured, verifyGoogleIdToken } from '../../lib/googleAuth';
 
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -194,60 +195,32 @@ export const authService = {
 
   /**
    * Authenticates or registers a user via a verified Google ID token.
-   * Unsigned JWT decode and client-supplied email bodies are deliberately rejected.
+   *
+   * The browser GIS button sends `credential` (a JWT). We verify signature,
+   * audience, issuer, and email_verified with google-auth-library — never trust
+   * a client-supplied email body.
    */
   async googleAuth(input: { credential?: string }): Promise<AuthResponse> {
+    if (!isGoogleAuthConfigured()) {
+      throw new AppError('Google sign-in is not configured on this server', 503);
+    }
     if (!input.credential) {
       throw new AppError('Google authentication failed: credential is required', 400);
     }
-    if (!env.GOOGLE_CLIENT_ID) {
-      throw new AppError('Google sign-in is not configured on this server', 503);
-    }
 
-    let email: string | undefined;
-    let name: string | undefined;
-
-    try {
-      const verifyRes = await fetch(
-        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(input.credential)}`
-      );
-      if (!verifyRes.ok) {
-        throw new AppError('Google authentication failed: invalid credential', 401);
-      }
-      const payload: any = await verifyRes.json();
-
-      // Audience must match our client ID — otherwise any Google token would work.
-      if (payload.aud !== env.GOOGLE_CLIENT_ID) {
-        throw new AppError('Google authentication failed: audience mismatch', 401);
-      }
-      const verified =
-        payload.email_verified === true ||
-        payload.email_verified === 'true';
-      if (!payload.email || !verified) {
-        throw new AppError('Google authentication failed: email is not verified by Google', 401);
-      }
-
-      email = String(payload.email);
-      name = payload.name || payload.given_name || undefined;
-    } catch (err) {
-      if (err instanceof AppError) throw err;
-      logger.warn({ err }, 'Google tokeninfo request failed');
-      throw new AppError('Google authentication failed: could not verify identity', 401);
-    }
-
-    const normalizedEmail = email!.toLowerCase();
+    const identity = await verifyGoogleIdToken(input.credential);
+    const normalizedEmail = identity.email;
+    const userName = identity.name || normalizedEmail.split('@')[0];
 
     let user: any = await db.select(
       'tbl_user',
-      'id, email, name, plan, emailVerified',
+      'id, email, name, plan, emailVerified, authProvider',
       'email = ?',
       [normalizedEmail]
     );
 
     if (!user) {
       const userId = crypto.randomUUID();
-      const userName = name || normalizedEmail.split('@')[0];
-
       await db.insert('tbl_user', {
         id: userId,
         email: normalizedEmail,
@@ -265,20 +238,29 @@ export const authService = {
         name: userName,
         plan: 'FREE',
         emailVerified: 1,
+        authProvider: 'google',
       };
-    } else if (!user.emailVerified) {
-      // Existing password account signing in with Google — trust Google's verification.
-      await db.execute(
-        `UPDATE tbl_user
-            SET emailVerified = 1,
-                emailVerifyToken = NULL,
-                emailVerifyExpiresAt = NULL,
-                authProvider = IF(authProvider = 'password', 'password', 'google')
-          WHERE id = ?`,
-        [user.id]
-      );
+      logger.info({ userId, email: normalizedEmail }, 'Created user via Google sign-in');
+    } else {
+      // Existing account (password or google): trust Google's verified email.
+      const updates: Record<string, unknown> = {
+        emailVerified: 1,
+        emailVerifyToken: null,
+        emailVerifyExpiresAt: null,
+      };
+      // Prefer a real display name from Google if we only had a placeholder.
+      if (identity.name && (!user.name || user.name === normalizedEmail.split('@')[0])) {
+        updates.name = identity.name;
+        user.name = identity.name;
+      }
+      // Keep 'password' if they registered with email first; otherwise mark google.
+      if (user.authProvider !== 'password') {
+        updates.authProvider = 'google';
+      }
+      await db.update('tbl_user', updates, 'id = ?', [user.id]);
       await invalidateUser(user.id).catch(() => undefined);
       user.emailVerified = 1;
+      logger.info({ userId: user.id, email: normalizedEmail }, 'Signed in via Google');
     }
 
     const token = signToken({ userId: user.id, email: user.email, plan: user.plan });

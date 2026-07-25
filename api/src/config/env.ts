@@ -90,9 +90,11 @@ const envSchema = z.object({
   // reach — defaulting to localhost in production would mail out dead links.
   APP_URL: z.string().url().default('http://localhost:5174'),
 
-  // Google OAuth — required to verify ID tokens (audience check). Without this,
-  // Google sign-in is rejected rather than trusting an unverified email body.
+  // Google Identity Services — Client ID is the JWT audience for ID-token login.
+  // Client secret is optional here (unused for GIS ID tokens; kept for future
+  // Google API / OAuth code flows such as Drive).
   GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
 
   // --- Digital signature (PAdES/PKCS#7) ---
   // The signing certificate applied to the finished PDF so any later edit

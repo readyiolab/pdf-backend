@@ -15,6 +15,7 @@ import { errorHandler } from './middleware/errorHandler.middleware';
 import { createDashboard } from './lib/bullBoard';
 import { createMysqlPool } from './lib/mysql';
 import { isMailerConfigured } from './lib/mailer';
+import { isGoogleAuthConfigured } from './lib/googleAuth';
 import { startSignFinalizeWorker } from './lib/signFinalizeWorker';
 
 const app = express();
@@ -157,6 +158,11 @@ async function bootstrap() {
         logger.info(`✉️  Email configured (SMTP host ${env.SMTP_HOST}, from ${env.SMTP_FROM || env.SMTP_USER})`);
       } else {
         logger.warn('✉️  Email NOT configured — signing invitations/OTPs will fail. Set SMTP_HOST/SMTP_USER/SMTP_PASS in this process\'s .env and restart.');
+      }
+      if (isGoogleAuthConfigured()) {
+        logger.info('🔐 Google sign-in configured (GOOGLE_CLIENT_ID set)');
+      } else {
+        logger.warn('🔐 Google sign-in NOT configured — set GOOGLE_CLIENT_ID and restart.');
       }
       logger.info(`🔗 Signing links will point at APP_URL=${env.APP_URL}`);
       // NOTE: expired-file cleanup now runs in the worker as a BullMQ repeatable
