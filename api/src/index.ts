@@ -17,6 +17,7 @@ import { createMysqlPool } from './lib/mysql';
 import { isMailerConfigured } from './lib/mailer';
 import { isGoogleAuthConfigured } from './lib/googleAuth';
 import { startSignFinalizeWorker } from './lib/signFinalizeWorker';
+import { startStorageCacheInvalidationSubscriber, startByocHealthAlertSubscriber } from './lib/storage';
 
 const app = express();
 
@@ -143,6 +144,10 @@ async function bootstrap() {
   try {
     // 1. Initialize MySQL Connection Pool & tables
     await createMysqlPool();
+
+    // Cross-process BYOC provider cache invalidation + owner health emails
+    startStorageCacheInvalidationSubscriber();
+    startByocHealthAlertSubscriber();
 
     // 2. Start sign-finalize worker (seals PDFs off the HTTP path)
     startSignFinalizeWorker();

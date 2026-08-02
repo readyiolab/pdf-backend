@@ -38,7 +38,11 @@ const envSchema = z.object({
   BCRYPT_OTP_ROUNDS: z.coerce.number().min(4).max(10).default(6),
 
   // Comma-separated list of allowed browser origins for CORS
-  CORS_ORIGINS: z.string().default('http://localhost:5173,http://localhost:5174,http://localhost:3000,http://localhost:5000,http://127.0.0.1:5173'),
+  CORS_ORIGINS: z
+    .string()
+    .default(
+      'http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:3000,http://localhost:5000,http://127.0.0.1:5173'
+    ),
   // Max JSON request body size (protects against large-payload DoS)
   MAX_JSON_BODY: z.string().default('100kb'),
   // Max JSON body for the signing router only. A field-designer save posts the
@@ -95,6 +99,37 @@ const envSchema = z.object({
   // Google API / OAuth code flows such as Drive).
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+
+  // AES-256 key for encrypting BYOC storage credentials at rest.
+  // 32 bytes as base64 (44 chars) or 64-char hex. Generate: openssl rand -base64 32
+  INFRA_CREDENTIALS_KEY: z.string().optional(),
+  // Previous key during rotation — decrypt tries current then previous.
+  INFRA_CREDENTIALS_KEY_PREVIOUS: z.string().optional(),
+
+  // Comma-separated emails treated as platform admins for the Admin app
+  // (in addition to tbl_user.isPlatformAdmin = 1).
+  PLATFORM_ADMIN_EMAILS: z.string().optional(),
+  // Optional comma-separated CIDR/IP allowlist for Admin API access.
+  PLATFORM_ADMIN_IP_ALLOWLIST: z.string().optional(),
+  // Admin JWT TTL (shorter than customer sessions).
+  ADMIN_JWT_EXPIRES_IN: z.string().default('8h'),
+  // Allow http:// BYOC endpoints (self-hosted MinIO) even in production.
+  BYOC_ALLOW_INSECURE_ENDPOINTS: envBool(false),
+
+  // Optional bootstrap for the Admin app. Leave unset in production unless
+  // you intentionally want API boot to create/update a platform admin.
+  SEED_PLATFORM_ADMIN_EMAIL: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().email().optional()
+  ),
+  SEED_PLATFORM_ADMIN_PASSWORD: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().min(8).optional()
+  ),
+  SEED_PLATFORM_ADMIN_NAME: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().optional()
+  ),
 
   // --- Digital signature (PAdES/PKCS#7) ---
   // The signing certificate applied to the finished PDF so any later edit

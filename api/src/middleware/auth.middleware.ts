@@ -10,7 +10,7 @@ declare global {
     interface Request {
       user: {
         id: string;
-        plan: 'FREE' | 'PRO';
+        plan: 'FREE' | 'PRO' | 'ENTERPRISE';
         isGuest: boolean;
         emailVerified: boolean;
       };
@@ -101,8 +101,17 @@ export const authMiddleware = async (
     } catch (err) {
       logger.warn({ err }, 'Redis unavailable, skipping user cache read');
     }
+    // Old cache payloads without org fields must be refreshed
+    if (cached && (cached.organizationId === undefined || cached.storageBindingId === undefined)) {
+      cached = null;
+    }
     if (!cached) {
-      const user = await db.select('tbl_user', 'id, plan, emailVerified', 'id = ?', [decoded.userId]);
+      const user = await db.select(
+        'tbl_user',
+        'id, plan, emailVerified, organizationId',
+        'id = ?',
+        [decoded.userId]
+      );
       if (!user) {
         throw new AppError('The user belonging to this token no longer exists', 401);
       }
@@ -116,10 +125,38 @@ export const authMiddleware = async (
           rawVerified.length > 0 &&
           rawVerified[0] !== 0);
 
+      let organizationId = (user.organizationId as string) || null;
+      if (!organizationId) {
+        const org = await db.select('tbl_organization', 'id', 'ownerUserId = ?', [
+          decoded.userId,
+        ]);
+        if (org?.id) {
+          organizationId = org.id as string;
+          await db
+            .update('tbl_user', { organizationId }, 'id = ?', [decoded.userId])
+            .catch(() => undefined);
+        }
+      }
+
+      let storageBindingId: string | null = null;
+      if (organizationId) {
+        const cfg = await db.select(
+          'tbl_org_storage_config',
+          'activeBindingId, provider',
+          'organizationId = ?',
+          [organizationId]
+        );
+        if (cfg && cfg.provider !== 'PLATFORM' && cfg.activeBindingId) {
+          storageBindingId = cfg.activeBindingId as string;
+        }
+      }
+
       cached = {
         id: user.id,
-        plan: user.plan as 'FREE' | 'PRO',
+        plan: user.plan as 'FREE' | 'PRO' | 'ENTERPRISE',
         emailVerified,
+        organizationId,
+        storageBindingId,
       };
       try {
         await setCachedUser(cached);

@@ -1,6 +1,5 @@
 import crypto from 'crypto';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { s3, getObjectBytes, getSignedDownloadUrl } from '../../lib/s3';
+import { getObjectBytes, getSignedDownloadUrl, putObjectBytes } from '../../lib/s3';
 import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
@@ -63,7 +62,8 @@ export const finalizeService = {
         config: typeof f.config === 'string' ? JSON.parse(f.config || '{}') : (f.config ?? {}),
       }));
 
-      const originalBytes = await getObjectBytes(doc!.fileKey);
+      const bindingId = doc!.storageBindingId ?? null;
+      const originalBytes = await getObjectBytes(doc!.fileKey, bindingId);
 
       const currentHash = crypto.createHash('sha256').update(originalBytes).digest('hex');
       if (doc!.originalHash && currentHash !== doc!.originalHash) {
@@ -101,35 +101,19 @@ export const finalizeService = {
         if (result.timestamp) {
           tsaTimestamp = result.timestamp.timestamp;
           tsaTokenKey = `${folder}/timestamp_v${version}.tsr`;
-          await s3.send(
-            new PutObjectCommand({
-              Bucket: env.DO_SPACES_BUCKET,
-              Key: tsaTokenKey,
-              Body: result.timestamp.token,
-              ContentType: 'application/timestamp-reply',
-            })
+          await putObjectBytes(
+            tsaTokenKey,
+            result.timestamp.token,
+            'application/timestamp-reply',
+            bindingId
           );
         }
       } catch (err) {
         logger.error({ err, documentId }, 'Digital signature failed; storing unsigned final document');
       }
 
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: env.DO_SPACES_BUCKET,
-          Key: signedKey,
-          Body: signedBytes,
-          ContentType: 'application/pdf',
-        })
-      );
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: env.DO_SPACES_BUCKET,
-          Key: certificateKey,
-          Body: certificateBytes,
-          ContentType: 'application/pdf',
-        })
-      );
+      await putObjectBytes(signedKey, signedBytes, 'application/pdf', bindingId);
+      await putObjectBytes(certificateKey, certificateBytes, 'application/pdf', bindingId);
 
       // Hash the bytes we just uploaded — avoid a second full Spaces download.
       const sha256 = crypto.createHash('sha256').update(signedBytes).digest('hex');
@@ -139,6 +123,7 @@ export const finalizeService = {
         documentId,
         version,
         fileKey: signedKey,
+        storageBindingId: bindingId,
         fileSize: signedBytes.length,
         sha256,
         certificateKey,

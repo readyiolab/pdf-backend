@@ -205,6 +205,8 @@ export interface SignDocumentDTO {
   status: SignDocumentStatus;
   flowType: SignFlowType;
   fileKey: string; // S3 key of the ORIGINAL upload — never overwritten
+  /** BYOC binding that wrote fileKey; null = platform Spaces */
+  storageBindingId?: string | null;
   fileName: string;
   fileSize: number;
   pageCount: number;

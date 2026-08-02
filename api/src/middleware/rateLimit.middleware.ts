@@ -134,3 +134,16 @@ export const pollRateLimiter = rateLimit({
     message: 'Too many status checks, slowing down.',
   },
 });
+
+/** BYOC storage test/save — outbound network + probe writes; keep tight. */
+export const enterpriseStorageLimiter = rateLimit({
+  ...common,
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,
+  store: redisStore('rl:enterprise-storage:'),
+  keyGenerator: (req) => (req as any).user?.id || req.ip || 'anon',
+  message: {
+    status: 'error',
+    message: 'Too many storage connection attempts. Please try again in an hour.',
+  },
+});

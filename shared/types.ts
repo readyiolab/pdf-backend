@@ -1,6 +1,6 @@
 export type JobStatus = 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
 
-export type Plan = 'FREE' | 'PRO';
+export type Plan = 'FREE' | 'PRO' | 'ENTERPRISE';
 
 export type ToolName =
   | 'merge'
@@ -89,7 +89,11 @@ export type ToolOptions =
 export interface JobPayload {
   jobId: string;
   userId: string | null;
+  /** Owning org when user is on ENTERPRISE BYOC; null = platform storage. */
+  organizationId?: string | null;
+  /** Immutable storage binding that owns input/output keys for this job. */
+  storageBindingId?: string | null;
   tool: ToolName;
-  inputFiles: string[]; // S3 Keys
+  inputFiles: string[]; // Object keys
   options: Record<string, any>;
 }

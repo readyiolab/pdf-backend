@@ -6,6 +6,7 @@ import { startLightWorker } from './queue/lightQueue.worker';
 import { startMaintenanceWorker } from './queue/maintenance.worker';
 import { redis } from './lib/redis';
 import { createMysqlPool, db } from './lib/mysql';
+import { startWorkerStorageCacheSubscriber } from './storage/s3';
 
 logger.info('Initializing Worker Service...');
 
@@ -93,6 +94,9 @@ async function bootstrap() {
   try {
     // 1. Initialize MySQL connection pool
     await createMysqlPool();
+
+    // Cross-process BYOC provider cache invalidation (API ↔ worker)
+    startWorkerStorageCacheSubscriber();
 
     // 2. Start BullMQ workers
     heavyWorker = startHeavyWorker();

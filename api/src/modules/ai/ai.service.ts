@@ -1,7 +1,5 @@
 import crypto from 'crypto';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { s3, getObjectBytes, headObjectSize, readObjectHead } from '../../lib/s3';
+import { getObjectBytes, headObjectSize, readObjectHead } from '../../lib/s3';
 import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
@@ -12,6 +10,8 @@ import { PLAN_LIMITS } from '../../../../shared/constants';
 import { getAiProvider, isAiConfigured, type AiMessage } from '../../lib/ai/provider';
 import { extractPdfText, assertHasText } from '../../lib/pdfText';
 import type { ChatInput, ExplainInput, SummarizeInput } from './ai.types';
+import { asPlan, getStorageForUser } from '../../lib/storage';
+import type { Plan } from '../../../../shared/types';
 
 const AI_PREFIX = 'pdf-saas-ai';
 const AI_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -38,30 +38,34 @@ const EXPLAIN_PROMPTS: Record<string, string> = {
   technical: 'Explain the document below for a technical reader: the key concepts, how the pieces fit together, and any important specifics.',
 };
 
+function isOwnedAiKey(fileKey: string, userId: string, organizationId: string | null): boolean {
+  if (organizationId && fileKey.startsWith(`org-${organizationId}/ai/`)) return true;
+  return fileKey.startsWith(`${AI_PREFIX}/user-${userId}/`);
+}
+
 export const aiService = {
   async presignUpload(userId: string, input: { fileName: string }) {
     if (!isAiConfigured()) throw new AppError('AI features are not available right now.', 503);
     const sanitized = input.fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const fileKey = `${AI_PREFIX}/user-${userId}/${crypto.randomUUID()}_${sanitized}`;
-    const uploadUrl = await getSignedUrl(
-      s3,
-      new PutObjectCommand({ Bucket: env.DO_SPACES_BUCKET, Key: fileKey, ContentType: 'application/pdf' }),
-      { expiresIn: env.PRESIGN_TTL_SECONDS }
-    );
+    const { storage, organizationId } = await getStorageForUser(userId);
+    const fileKey = organizationId
+      ? `org-${organizationId}/ai/${crypto.randomUUID()}_${sanitized}`
+      : `${AI_PREFIX}/user-${userId}/${crypto.randomUUID()}_${sanitized}`;
+    const uploadUrl = await storage.presignPut(fileKey, 'application/pdf', env.PRESIGN_TTL_SECONDS);
     return { uploadUrl, fileKey };
   },
 
-  async summarize(userId: string, plan: 'FREE' | 'PRO', input: SummarizeInput) {
+  async summarize(userId: string, plan: Plan, input: SummarizeInput) {
     const text = await this.prepareDocument(userId, input.fileKey);
-    return this.runOneShot(userId, plan, [
+    return this.runOneShot(userId, asPlan(plan), [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: `${SUMMARY_PROMPTS[input.style]}\n\n--- DOCUMENT ---\n${text}` },
     ]);
   },
 
-  async explain(userId: string, plan: 'FREE' | 'PRO', input: ExplainInput) {
+  async explain(userId: string, plan: Plan, input: ExplainInput) {
     const text = await this.prepareDocument(userId, input.fileKey);
-    return this.runOneShot(userId, plan, [
+    return this.runOneShot(userId, asPlan(plan), [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: `${EXPLAIN_PROMPTS[input.audience]}\n\n--- DOCUMENT ---\n${text}` },
     ]);
@@ -75,7 +79,7 @@ export const aiService = {
    * recent turns so cost is bounded, and the document sits in a system message
    * so the user's own turns can't overwrite or spoof it.
    */
-  async chat(userId: string, plan: 'FREE' | 'PRO', input: ChatInput) {
+  async chat(userId: string, plan: Plan, input: ChatInput) {
     const text = await this.prepareDocument(userId, input.fileKey);
     const history = input.messages.slice(-MAX_CHAT_TURNS);
 
@@ -88,8 +92,9 @@ export const aiService = {
   },
 
   /** Reserves a credit, calls the model, refunds on failure. Shared by all three. */
-  async runOneShot(userId: string, plan: 'FREE' | 'PRO', messages: AiMessage[], maxTokens = 1024) {
-    await reserveAiCredit(userId, PLAN_LIMITS[plan].maxMonthlyAiCredits, plan);
+  async runOneShot(userId: string, plan: Plan, messages: AiMessage[], maxTokens = 1024) {
+    const normalized = asPlan(plan);
+    await reserveAiCredit(userId, PLAN_LIMITS[normalized].maxMonthlyAiCredits, normalized);
     try {
       const { text, usage } = await getAiProvider().complete(messages, { maxTokens });
       if (!text) throw new AppError('The AI could not produce a response for this document.', 502);
@@ -111,7 +116,8 @@ export const aiService = {
     if (!isAiConfigured()) {
       throw new AppError('AI features are not available right now. Please try again later.', 503);
     }
-    if (!fileKey.startsWith(`${AI_PREFIX}/user-${userId}/`)) {
+    const { organizationId } = await getStorageForUser(userId);
+    if (!isOwnedAiKey(fileKey, userId, organizationId)) {
       throw new AppError('Invalid file for this account.', 400);
     }
 
@@ -152,18 +158,19 @@ export const aiService = {
     return extracted.text;
   },
 
-  async getQuota(userId: string, plan: 'FREE' | 'PRO') {
+  async getQuota(userId: string, plan: Plan) {
+    const normalized = asPlan(plan);
     const row = await db.select('tbl_user', 'monthlyAiUsed, monthlyAiResetAt', 'id = ?', [userId]);
-    const limit = PLAN_LIMITS[plan].maxMonthlyAiCredits;
+    const limit = PLAN_LIMITS[normalized].maxMonthlyAiCredits;
     const windowElapsed =
       !row?.monthlyAiResetAt || new Date(row.monthlyAiResetAt).getTime() < Date.now() - AI_WINDOW_MS;
     const used = windowElapsed ? 0 : Number(row?.monthlyAiUsed ?? 0);
-    return { used, limit, remaining: Math.max(0, limit - used), plan };
+    return { used, limit, remaining: Math.max(0, limit - used), plan: normalized };
   },
 };
 
 /** Atomic monthly-credit reservation — same guarded UPDATE as the signing quota. */
-async function reserveAiCredit(userId: string, limit: number, plan: 'FREE' | 'PRO'): Promise<void> {
+async function reserveAiCredit(userId: string, limit: number, plan: Plan): Promise<void> {
   const now = new Date();
   const cutoff = new Date(now.getTime() - AI_WINDOW_MS);
   const reserve = await db.execute(
@@ -175,9 +182,9 @@ async function reserveAiCredit(userId: string, limit: number, plan: 'FREE' | 'PR
   );
   if (reserve.affectedRows === 0) {
     throw new AppError(
-      plan === 'PRO'
-        ? `You've used all ${limit} AI requests for this month. It resets on a rolling 30-day basis.`
-        : `You've used all ${limit} free AI requests this month. Upgrade to PRO for more.`,
+      plan === 'FREE'
+        ? `You've used all ${limit} free AI requests this month. Upgrade to PRO for more.`
+        : `You've used all ${limit} AI requests for this month. It resets on a rolling 30-day basis.`,
       403
     );
   }

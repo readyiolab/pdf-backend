@@ -5,6 +5,7 @@ import { db } from '../lib/mysql';
 import { env } from '../config/env';
 import { scanFile } from '../lib/clamav';
 import { downloadFromS3, cleanupLocalFile, deleteFromS3 } from '../storage/s3';
+import { jobStorageContext } from '../storage/context';
 import { moveToDeadLetter } from './deadLetter';
 
 // Import processors
@@ -43,97 +44,98 @@ async function scanInputs(jobId: string, inputFiles: string[]): Promise<void> {
 }
 
 export async function jobRouter(job: Job<JobPayload>): Promise<void> {
-  const { jobId, tool, inputFiles, options } = job.data;
+  const { jobId, tool, inputFiles, options, organizationId, storageBindingId } = job.data;
 
-  logger.info({ jobId, tool }, 'Worker: Starting processing job');
+  return jobStorageContext.run(
+    {
+      organizationId: organizationId ?? null,
+      storageBindingId: storageBindingId ?? null,
+    },
+    async () => {
+    logger.info({ jobId, tool, organizationId, storageBindingId }, 'Worker: Starting processing job');
 
-  // 1. Update job status to PROCESSING in MySQL -> tbl_job
-  try {
-    await db.execute('UPDATE tbl_job SET status = "PROCESSING" WHERE id = ?', [jobId]);
-  } catch (dbErr) {
-    logger.error({ jobId, dbErr }, 'Failed to update job status to PROCESSING in DB');
-  }
-
-  try {
-    await job.updateProgress(5);
-
-    // 1b. Security scan (gated) before any parsing.
-    await scanInputs(jobId, inputFiles);
-    await job.updateProgress(20);
-
-    let result: { outputFileKey: string };
-
-    // 2. Delegate to correct processor based on tool name
-    switch (tool) {
-      case 'merge':
-        result = await mergeProcessor(jobId, inputFiles, options);
-        break;
-      case 'split':
-        result = await splitProcessor(jobId, inputFiles, options as any);
-        break;
-      case 'compress':
-        result = await compressProcessor(jobId, inputFiles, options as any);
-        break;
-      case 'jpgToPdf':
-        result = await jpgToPdfProcessor(jobId, inputFiles, options);
-        break;
-      case 'pdfToJpg':
-        result = await pdfToJpgProcessor(jobId, inputFiles, options);
-        break;
-      case 'rotate':
-        result = await rotateProcessor(jobId, inputFiles, options as any);
-        break;
-      case 'watermark':
-        result = await watermarkProcessor(jobId, inputFiles, options as any);
-        break;
-      case 'protect':
-        result = await protectProcessor(jobId, inputFiles, options as any);
-        break;
-      case 'officeConvert':
-        result = await officeConvertProcessor(jobId, inputFiles, options as any);
-        break;
-      case 'ocr':
-        result = await ocrProcessor(jobId, inputFiles, options as any);
-        break;
-      default:
-        throw new Error(`Unsupported tool: ${tool}`);
+    try {
+      await db.execute('UPDATE tbl_job SET status = "PROCESSING" WHERE id = ?', [jobId]);
+    } catch (dbErr) {
+      logger.error({ jobId, dbErr }, 'Failed to update job status to PROCESSING in DB');
     }
 
-    await job.updateProgress(95);
-    logger.info({ jobId, tool, outputFileKey: result.outputFileKey }, 'Worker: Job completed successfully');
+    try {
+      await job.updateProgress(5);
+      await scanInputs(jobId, inputFiles);
+      await job.updateProgress(20);
 
-    // 3. Update status to COMPLETED -> tbl_job
-    await db.execute(
-      'UPDATE tbl_job SET status = "COMPLETED", completedAt = ?, outputFile = ? WHERE id = ?',
-      [new Date(), result.outputFileKey, jobId]
-    );
-    await job.updateProgress(100);
-  } catch (err: any) {
-    const errorMsg = err.message || 'Unknown processing error';
-    const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-    logger.error(
-      { jobId, tool, attempt: job.attemptsMade + 1, isFinalAttempt, err },
-      'Worker: Job failed during processing'
-    );
+      let result: { outputFileKey: string };
 
-    if (isFinalAttempt) {
-      // 4. Terminal failure — record it and immediately purge the inputs so we
-      //    don't wait for the scheduled sweep to reclaim storage.
-      try {
-        await db.execute(
-          'UPDATE tbl_job SET status = "FAILED", errorMessage = ?, completedAt = ? WHERE id = ?',
-          [errorMsg, new Date(), jobId]
-        );
-      } catch (dbErr) {
-        logger.error({ jobId, dbErr }, 'Failed to update job status to FAILED in DB');
+      switch (tool) {
+        case 'merge':
+          result = await mergeProcessor(jobId, inputFiles, options);
+          break;
+        case 'split':
+          result = await splitProcessor(jobId, inputFiles, options as any);
+          break;
+        case 'compress':
+          result = await compressProcessor(jobId, inputFiles, options as any);
+          break;
+        case 'jpgToPdf':
+          result = await jpgToPdfProcessor(jobId, inputFiles, options);
+          break;
+        case 'pdfToJpg':
+          result = await pdfToJpgProcessor(jobId, inputFiles, options);
+          break;
+        case 'rotate':
+          result = await rotateProcessor(jobId, inputFiles, options as any);
+          break;
+        case 'watermark':
+          result = await watermarkProcessor(jobId, inputFiles, options as any);
+          break;
+        case 'protect':
+          result = await protectProcessor(jobId, inputFiles, options as any);
+          break;
+        case 'officeConvert':
+          result = await officeConvertProcessor(jobId, inputFiles, options as any);
+          break;
+        case 'ocr':
+          result = await ocrProcessor(jobId, inputFiles, options as any);
+          break;
+        default:
+          throw new Error(`Unsupported tool: ${tool}`);
       }
-      await deleteFromS3(inputFiles).catch((cleanupErr) =>
-        logger.warn({ jobId, cleanupErr }, 'Failed to purge inputs of failed job')
+
+      await job.updateProgress(95);
+      logger.info(
+        { jobId, tool, outputFileKey: result.outputFileKey },
+        'Worker: Job completed successfully'
       );
-      // Preserve full context in the dead-letter queue for inspection/replay.
-      await moveToDeadLetter(job.data, errorMsg, job.attemptsMade + 1);
+
+      await db.execute(
+        'UPDATE tbl_job SET status = "COMPLETED", completedAt = ?, outputFile = ? WHERE id = ?',
+        [new Date(), result.outputFileKey, jobId]
+      );
+      await job.updateProgress(100);
+    } catch (err: any) {
+      const errorMsg = err.message || 'Unknown processing error';
+      const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+      logger.error(
+        { jobId, tool, attempt: job.attemptsMade + 1, isFinalAttempt, err },
+        'Worker: Job failed during processing'
+      );
+
+      if (isFinalAttempt) {
+        try {
+          await db.execute(
+            'UPDATE tbl_job SET status = "FAILED", errorMessage = ?, completedAt = ? WHERE id = ?',
+            [errorMsg, new Date(), jobId]
+          );
+        } catch (dbErr) {
+          logger.error({ jobId, dbErr }, 'Failed to update job status to FAILED in DB');
+        }
+        await deleteFromS3(inputFiles).catch((cleanupErr) =>
+          logger.warn({ jobId, cleanupErr }, 'Failed to purge inputs of failed job')
+        );
+        await moveToDeadLetter(job.data, errorMsg, job.attemptsMade + 1);
+      }
+      throw err;
     }
-    // Re-throw so BullMQ can retry (until attempts are exhausted).
-    throw err;
-  }
+  });
 }

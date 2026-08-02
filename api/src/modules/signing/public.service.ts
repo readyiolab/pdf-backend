@@ -169,7 +169,9 @@ export const publicSigningService = {
     // The file URL is withheld until the challenge is passed. Handing it over
     // first would make the OTP/access code decorative — the document would already be
     // readable by anyone holding the link.
-    const fileUrl = isVerified ? await getSignedViewUrl(document.fileKey, 3600) : null;
+    const fileUrl = isVerified
+      ? await getSignedViewUrl(document.fileKey, 3600, document.storageBindingId ?? null)
+      : null;
 
     return {
       document: {
@@ -275,7 +277,7 @@ export const publicSigningService = {
 
     return {
       sessionToken: signSigningSession({ recipientId: recipient.id, documentId: document.id }),
-      fileUrl: await getSignedViewUrl(document.fileKey, 3600),
+      fileUrl: await getSignedViewUrl(document.fileKey, 3600, document.storageBindingId ?? null),
     };
   },
 
@@ -320,7 +322,7 @@ export const publicSigningService = {
 
     return {
       sessionToken: signSigningSession({ recipientId: recipient.id, documentId: document.id }),
-      fileUrl: await getSignedViewUrl(document.fileKey, 3600),
+      fileUrl: await getSignedViewUrl(document.fileKey, 3600, document.storageBindingId ?? null),
     };
   },
 

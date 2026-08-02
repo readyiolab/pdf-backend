@@ -22,6 +22,10 @@ const envSchema = z.object({
   DO_SPACES_BUCKET: z.string(),
   DO_SPACES_ENDPOINT: z.string().url(),
 
+  // Same key as the API — required to decrypt BYOC credentials for org jobs.
+  INFRA_CREDENTIALS_KEY: z.string().optional(),
+  INFRA_CREDENTIALS_KEY_PREVIOUS: z.string().optional(),
+
   // Malware scanning (optional). When disabled, the scan step is a no-op.
   CLAMAV_ENABLED: z
     .enum(['true', 'false'])

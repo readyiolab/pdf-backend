@@ -6,8 +6,18 @@ import { PLAN_LIMITS } from '../../../../shared/constants';
 import { RECIPIENT_COLORS, SIGNING_LIMITS } from '../../../../shared/signing';
 import type { CreateTemplateInput, UseTemplateInput } from './signing.types';
 import { signingService } from './signing.service';
+import { asPlan, getActiveStorageBindingId, getOrganizationIdForUser } from '../../lib/storage';
 
 const SIGNING_PREFIX = 'pdf-saas-signing';
+
+function signingDestKey(
+  userId: string,
+  organizationId: string | null,
+  relativePath: string
+): string {
+  if (organizationId) return `org-${organizationId}/signing/${relativePath}`;
+  return `${SIGNING_PREFIX}/user-${userId}/${relativePath}`;
+}
 
 interface TemplateRecipientRole {
   role: string;
@@ -77,7 +87,7 @@ export const templateService = {
 
   async createFromDocument(userId: string, input: CreateTemplateInput) {
     const user = await db.select('tbl_user', 'plan', 'id = ?', [userId]);
-    const plan = (user?.plan as 'FREE' | 'PRO') ?? 'FREE';
+    const plan = asPlan(user?.plan);
     const limit = PLAN_LIMITS[plan].maxSignTemplates;
 
     const count = await db.count('tbl_sign_template', 'ownerId = ?', [userId]);
@@ -131,22 +141,26 @@ export const templateService = {
     }
 
     const templateId = crypto.randomUUID();
-    const destKey = `${SIGNING_PREFIX}/user-${userId}/templates/${templateId}/original_${doc.fileName.replace(
-      /[^a-zA-Z0-9._-]/g,
-      '_'
-    )}`;
+    const organizationId = await getOrganizationIdForUser(userId);
+    const storageBindingId =
+      doc.storageBindingId ?? (await getActiveStorageBindingId(organizationId));
+    const destKey = signingDestKey(
+      userId,
+      organizationId,
+      `templates/${templateId}/original_${doc.fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    );
 
     try {
-      await copyObject(doc.fileKey, destKey);
+      await copyObject(doc.fileKey, destKey, storageBindingId);
     } catch {
       throw new AppError('Could not copy the PDF for this template. Try again.', 500);
     }
 
     let size = 0;
     try {
-      size = await headObjectSize(destKey);
+      size = await headObjectSize(destKey, storageBindingId);
     } catch {
-      await deleteObject(destKey);
+      await deleteObject(destKey, storageBindingId);
       throw new AppError('Could not verify the template PDF copy.', 500);
     }
 
@@ -160,6 +174,7 @@ export const templateService = {
         message: doc.message,
         flowType: doc.flowType,
         fileKey: destKey,
+        storageBindingId,
         fileName: doc.fileName,
         fileSize: size || doc.fileSize,
         pageCount: doc.pageCount,
@@ -168,7 +183,7 @@ export const templateService = {
         fieldsJson: JSON.stringify(fields),
       });
     } catch (err) {
-      await deleteObject(destKey);
+      await deleteObject(destKey, storageBindingId);
       throw err;
     }
 
@@ -179,14 +194,14 @@ export const templateService = {
   async remove(templateId: string, userId: string) {
     const row = await db.select(
       'tbl_sign_template',
-      'id, fileKey',
+      'id, fileKey, storageBindingId',
       'id = ? AND ownerId = ?',
       [templateId, userId]
     );
     if (!row) throw new AppError('Template not found', 404);
 
     await db.delete('tbl_sign_template', 'id = ?', [templateId]);
-    await deleteObject(row.fileKey);
+    await deleteObject(row.fileKey, row.storageBindingId ?? null);
     return { id: templateId, deleted: true };
   },
 
@@ -219,13 +234,17 @@ export const templateService = {
     }
 
     const documentId = crypto.randomUUID();
-    const destKey = `${SIGNING_PREFIX}/user-${userId}/doc-${documentId}/original_${String(tpl.fileName).replace(
-      /[^a-zA-Z0-9._-]/g,
-      '_'
-    )}`;
+    const organizationId = await getOrganizationIdForUser(userId);
+    const storageBindingId =
+      tpl.storageBindingId ?? (await getActiveStorageBindingId(organizationId));
+    const destKey = signingDestKey(
+      userId,
+      organizationId,
+      `doc-${documentId}/original_${String(tpl.fileName).replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    );
 
     try {
-      await copyObject(tpl.fileKey, destKey);
+      await copyObject(tpl.fileKey, destKey, storageBindingId);
     } catch {
       throw new AppError('Could not copy the template PDF. Try again.', 500);
     }
@@ -235,9 +254,9 @@ export const templateService = {
     try {
       await conn.query(
         `INSERT INTO tbl_sign_document
-           (id, ownerId, title, message, status, flowType, fileKey, fileName, fileSize, pageCount,
+           (id, ownerId, title, message, status, flowType, fileKey, storageBindingId, fileName, fileSize, pageCount,
             currentVersion, originalHash, expiresAt)
-         VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, 1, ?, ?)`,
+         VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         [
           documentId,
           userId,
@@ -245,6 +264,7 @@ export const templateService = {
           tpl.message,
           tpl.flowType,
           destKey,
+          storageBindingId,
           tpl.fileName,
           tpl.fileSize,
           tpl.pageCount,
@@ -254,9 +274,9 @@ export const templateService = {
       );
 
       await conn.query(
-        `INSERT INTO tbl_sign_document_version (id, documentId, version, fileKey, fileSize, sha256, label)
-         VALUES (?, ?, 1, ?, ?, ?, 'Original')`,
-        [crypto.randomUUID(), documentId, destKey, tpl.fileSize, tpl.originalHash]
+        `INSERT INTO tbl_sign_document_version (id, documentId, version, fileKey, storageBindingId, fileSize, sha256, label)
+         VALUES (?, ?, 1, ?, ?, ?, ?, 'Original')`,
+        [crypto.randomUUID(), documentId, destKey, storageBindingId, tpl.fileSize, tpl.originalHash]
       );
 
       const recipientIds: string[] = [];
@@ -310,7 +330,7 @@ export const templateService = {
       await db.commit(conn);
     } catch (err) {
       await db.rollback(conn);
-      await deleteObject(destKey);
+      await deleteObject(destKey, storageBindingId);
       throw err;
     }
 

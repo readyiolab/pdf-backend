@@ -9,6 +9,9 @@
     "start": "node dist/worker/src/index.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1101.0",
+    "@azure/storage-blob": "^12.33.0",
+    "archiver": "^6.0.1",
     "bullmq": "^5.1.0",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
@@ -17,13 +20,12 @@
     "pdf-lib": "^1.17.1",
     "pino": "^8.19.0",
     "sharp": "^0.33.2",
-    "zod": "^3.22.4",
-    "archiver": "^6.0.1"
+    "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@types/archiver": "^6.0.2",
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.20",
-    "@types/archiver": "^6.0.2",
     "pino-pretty": "^10.3.1",
     "tsx": "^4.7.1",
     "typescript": "^5.3.3"

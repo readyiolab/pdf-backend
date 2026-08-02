@@ -1,0 +1,23 @@
+version: '3.8'
+
+# Local fixtures for BYOC integration tests.
+# Usage:
+#   docker compose -f docker-compose.byoc-test.yml up -d
+#   cd api && BYOC_INTEGRATION=1 npm test -- src/lib/storage/byoc.integration.test.ts
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --loose
+    ports:
+      - '10000:10000'

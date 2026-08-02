@@ -59,7 +59,7 @@ export interface PlanLimits {
   maxMonthlyAiCredits: number;
 }
 
-export const PLAN_LIMITS: Record<'FREE' | 'PRO', PlanLimits> = {
+export const PLAN_LIMITS: Record<'FREE' | 'PRO' | 'ENTERPRISE', PlanLimits> = {
   FREE: {
     maxDailyOps: 5,
     maxFileSize: 10 * 1024 * 1024, // 10MB
@@ -73,6 +73,13 @@ export const PLAN_LIMITS: Record<'FREE' | 'PRO', PlanLimits> = {
     maxMonthlySigns: 200, // generous, but a guardrail against runaway email cost
     maxSignTemplates: 50,
     maxMonthlyAiCredits: 500, // generous, but bounds runaway token spend
+  },
+  ENTERPRISE: {
+    maxDailyOps: 10_000,
+    maxFileSize: 500 * 1024 * 1024, // 500MB
+    maxMonthlySigns: 5_000,
+    maxSignTemplates: 500,
+    maxMonthlyAiCredits: 10_000,
   },
 };
 

@@ -7,7 +7,10 @@ import { deleteFromS3 } from '../storage/s3';
 import { env } from '../config/env';
 import { MAINTENANCE_QUEUE } from '../../../shared/constants';
 
+import { runByocHealthSweep } from './byocHealth';
+
 const CLEANUP_JOB = 'cleanup-expired';
+const BYOC_HEALTH_JOB = 'byoc-health';
 
 /**
  * Deletes expired jobs and their input/output files. Runs on a BullMQ repeatable
@@ -18,14 +21,15 @@ async function cleanupExpired(): Promise<void> {
   const now = new Date();
 
   const expired = await db.queryAll(
-    'SELECT id, inputFiles, outputFile FROM tbl_job WHERE expiresAt < ? LIMIT 1000',
+    'SELECT id, inputFiles, outputFile, storageBindingId FROM tbl_job WHERE expiresAt < ? LIMIT 1000',
     [now]
   );
 
   if (!expired.length) return;
 
-  const keys: string[] = [];
+  const byBinding = new Map<string | null, string[]>();
   for (const job of expired) {
+    const keys: string[] = [];
     try {
       const inputs =
         typeof job.inputFiles === 'string' ? JSON.parse(job.inputFiles) : job.inputFiles;
@@ -34,15 +38,24 @@ async function cleanupExpired(): Promise<void> {
       /* ignore malformed inputFiles */
     }
     if (job.outputFile) keys.push(job.outputFile);
+    const bid = (job.storageBindingId as string) || null;
+    const list = byBinding.get(bid) ?? [];
+    list.push(...keys);
+    byBinding.set(bid, list);
   }
 
-  await deleteFromS3(keys);
+  // deleteFromS3 uses ALS binding when set; fall back to key-prefix grouping via null ALS
+  for (const [, keys] of byBinding) {
+    await deleteFromS3(keys);
+  }
 
   const ids = expired.map((j: any) => j.id as string);
   const placeholders = ids.map(() => '?').join(',');
   const del = await db.execute(`DELETE FROM tbl_job WHERE id IN (${placeholders})`, ids);
+  let deletedFiles = 0;
+  for (const keys of byBinding.values()) deletedFiles += keys.length;
   logger.info(
-    { deletedJobs: del.affectedRows, deletedFiles: keys.length },
+    { deletedJobs: del.affectedRows, deletedFiles },
     'Maintenance: cleaned up expired jobs'
   );
 }
@@ -123,6 +136,17 @@ export async function startMaintenanceWorker() {
     }
   );
 
+  await queue.add(
+    BYOC_HEALTH_JOB,
+    {},
+    {
+      repeat: { every: 15 * 60 * 1000 },
+      jobId: 'repeat:byoc-health',
+      removeOnComplete: true,
+      removeOnFail: 20,
+    }
+  );
+
   await queue.add(CLEANUP_JOB, {}, { removeOnComplete: true, removeOnFail: 20 });
 
   const worker = new Worker(
@@ -132,6 +156,8 @@ export async function startMaintenanceWorker() {
         await reapStalledJobs();
         await cleanupExpired();
         await expireSignDocuments();
+      } else if (job.name === BYOC_HEALTH_JOB) {
+        await runByocHealthSweep();
       }
     },
     { connection: redis as any, concurrency: 1 }

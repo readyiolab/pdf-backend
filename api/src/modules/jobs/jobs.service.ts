@@ -12,18 +12,20 @@ import { detectFileCategory } from '../../../../shared/fileType';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { CreateJobInput } from './jobs.types';
 import { ToolName } from '../../../../shared/types';
+import {
+  asPlan,
+  getActiveStorageBindingId,
+  getOrganizationIdForUser,
+  reportRuntimeStorageFailure,
+} from '../../lib/storage';
 import crypto from 'crypto';
 
-/**
- * Validates every uploaded input BEFORE any processing: enforces the real object
- * size against the plan limit (the presigned PUT can't) and verifies the true
- * file type from magic bytes (the client-declared Content-Type is untrusted).
- * Rejected objects are deleted so they don't linger in storage.
- */
 async function validateInputs(
   inputFiles: string[],
   tool: ToolName,
-  maxFileSize: number
+  maxFileSize: number,
+  bindingId: string | null,
+  organizationId: string | null
 ): Promise<void> {
   const allowed = TOOL_INPUT_TYPES[tool];
 
@@ -31,29 +33,27 @@ async function validateInputs(
     inputFiles.map(async (key) => {
       let size: number;
       try {
-        size = await headObjectSize(key);
-      } catch {
+        size = await headObjectSize(key, bindingId);
+      } catch (err) {
+        await reportRuntimeStorageFailure(organizationId, err);
         throw new AppError('An uploaded file could not be found. Please re-upload.', 400);
       }
 
       if (size <= 0) {
-        await deleteObject(key);
+        await deleteObject(key, bindingId);
         throw new AppError('An uploaded file is empty.', 400);
       }
       if (size > maxFileSize) {
-        await deleteObject(key);
+        await deleteObject(key, bindingId);
         const maxMb = Math.floor(maxFileSize / (1024 * 1024));
         throw new AppError(`A file exceeds your plan limit of ${maxMb}MB.`, 400);
       }
 
-      const head = await readObjectHead(key, 1024);
+      const head = await readObjectHead(key, 1024, bindingId);
       const category = detectFileCategory(head);
       if (!allowed.includes(category)) {
-        await deleteObject(key);
-        throw new AppError(
-          `An uploaded file is not a valid input for this tool.`,
-          400
-        );
+        await deleteObject(key, bindingId);
+        throw new AppError(`An uploaded file is not a valid input for this tool.`, 400);
       }
     })
   );
@@ -63,26 +63,26 @@ export const jobsService = {
   async createJob(userId: string, input: CreateJobInput) {
     const { tool, inputFiles, options } = input;
 
-    // 1. Fetch the authenticated user. authMiddleware guarantees the user exists,
-    //    so a miss here is a real error — never auto-create accounts.
     const user = await db.select('tbl_user', 'id, plan', 'id = ?', [userId]);
     if (!user) {
       throw new AppError('User not found', 404);
     }
 
-    const limits = PLAN_LIMITS[user.plan as 'FREE' | 'PRO'];
+    const plan = asPlan(user.plan);
+    const limits = PLAN_LIMITS[plan];
+    const organizationId = await getOrganizationIdForUser(userId);
+    const storageBindingId = await getActiveStorageBindingId(organizationId);
     const now = new Date();
     const windowCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-    // 2. Validate inputs (real size + magic bytes) BEFORE charging quota or
-    //    enqueuing, so a rejected upload never consumes an operation.
-    await validateInputs(inputFiles, tool as ToolName, limits.maxFileSize);
+    await validateInputs(
+      inputFiles,
+      tool as ToolName,
+      limits.maxFileSize,
+      storageBindingId,
+      organizationId
+    );
 
-    // 3. Atomically reserve one daily operation. A single guarded UPDATE avoids
-    //    the read-modify-write race where concurrent requests both pass the check.
-    //    - If the 24h window has elapsed, the counter resets to 1 and the window rolls.
-    //    - Otherwise it increments only while still under the plan limit.
-    //    (dailyOpsUsed is assigned first so it reads the ORIGINAL dailyOpsResetAt.)
     const reserve = await db.execute(
       `UPDATE tbl_user
          SET dailyOpsUsed   = IF(dailyOpsResetAt < ?, 1, dailyOpsUsed + 1),
@@ -99,7 +99,6 @@ export const jobsService = {
       );
     }
 
-    // 4. Create the Job record in DB -> tbl_job
     const jobId = crypto.randomUUID();
     const expiresAt = new Date(now.getTime() + env.JOB_TTL_MINUTES * 60 * 1000);
     const inputFilesStr = JSON.stringify(inputFiles);
@@ -108,17 +107,25 @@ export const jobsService = {
       await db.insert('tbl_job', {
         id: jobId,
         userId: user.id,
+        organizationId: organizationId ?? null,
+        storageBindingId: storageBindingId ?? null,
         tool,
         status: 'QUEUED',
         inputFiles: inputFilesStr,
         expiresAt,
       });
 
-      // 5. Push to BullMQ queue (PRO users get higher priority)
-      await pushToQueue(jobId, user.id, tool as ToolName, inputFiles, options, user.plan);
+      await pushToQueue(
+        jobId,
+        user.id,
+        tool as ToolName,
+        inputFiles,
+        options,
+        plan,
+        organizationId,
+        storageBindingId
+      );
     } catch (err) {
-      // Compensate the reserved operation if we failed to enqueue the job so the
-      // user is not charged for work that never ran.
       await db
         .execute(
           'UPDATE tbl_user SET dailyOpsUsed = GREATEST(dailyOpsUsed - 1, 0) WHERE id = ?',
@@ -149,7 +156,6 @@ export const jobsService = {
       throw new AppError('Job not found', 404);
     }
 
-    // Ensure users can only poll their own jobs
     if (job.userId !== userId) {
       throw new AppError('Unauthorized access to job details', 403);
     }
@@ -157,9 +163,10 @@ export const jobsService = {
     let inputFilesArray: string[] = [];
     try {
       if (job.inputFiles) {
-        inputFilesArray = typeof job.inputFiles === 'string' ? JSON.parse(job.inputFiles) : job.inputFiles;
+        inputFilesArray =
+          typeof job.inputFiles === 'string' ? JSON.parse(job.inputFiles) : job.inputFiles;
       }
-    } catch (e) {
+    } catch {
       // fallback
     }
 
@@ -169,13 +176,13 @@ export const jobsService = {
     };
   },
 
-  /**
-   * Returns a short-lived signed download URL for a completed job's output,
-   * but only to the job's owner. Result objects are private, so this is the
-   * only way to retrieve them.
-   */
   async getDownloadUrl(jobId: string, userId: string): Promise<{ url: string }> {
-    const job = await db.select('tbl_job', 'userId, status, outputFile', 'id = ?', [jobId]);
+    const job = await db.select(
+      'tbl_job',
+      'userId, status, outputFile, storageBindingId',
+      'id = ?',
+      [jobId]
+    );
 
     if (!job) {
       throw new AppError('Job not found', 404);
@@ -188,7 +195,12 @@ export const jobsService = {
     }
 
     const fileName = job.outputFile.split('/').pop() || 'download.pdf';
-    const url = await getSignedDownloadUrl(job.outputFile, fileName);
+    const url = await getSignedDownloadUrl(
+      job.outputFile,
+      fileName,
+      undefined,
+      job.storageBindingId ?? null
+    );
     return { url };
   },
 };

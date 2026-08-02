@@ -3,10 +3,13 @@ import crypto from 'crypto';
 import { redis } from './redis';
 import { env } from '../config/env';
 
+export const ADMIN_JWT_AUDIENCE = 'platform-admin';
+export const CUSTOMER_JWT_AUDIENCE = 'customer';
+
 export interface TokenClaims {
   userId: string;
   email: string;
-  plan: 'FREE' | 'PRO';
+  plan: 'FREE' | 'PRO' | 'ENTERPRISE';
   isGuest?: boolean;
 }
 
@@ -14,21 +17,33 @@ interface DecodedToken extends TokenClaims {
   jti: string;
   iat: number;
   exp: number;
+  aud?: string | string[];
 }
 
 const DENYLIST_PREFIX = 'jwt:denylist:';
 
-/** Signs a token with a unique jti so it can later be individually revoked. */
-export function signToken(claims: TokenClaims): string {
-  const expiresIn = claims.isGuest ? env.GUEST_JWT_EXPIRES_IN : env.JWT_EXPIRES_IN;
+export function signToken(
+  claims: TokenClaims,
+  opts?: { audience?: string; expiresIn?: string }
+): string {
+  const expiresIn =
+    opts?.expiresIn ||
+    (claims.isGuest ? env.GUEST_JWT_EXPIRES_IN : env.JWT_EXPIRES_IN);
   return jwt.sign(claims, env.JWT_SECRET, {
     expiresIn: expiresIn as any,
     jwtid: crypto.randomUUID(),
+    audience: opts?.audience || CUSTOMER_JWT_AUDIENCE,
   });
 }
 
-export function verifyToken(token: string): DecodedToken {
-  return jwt.verify(token, env.JWT_SECRET) as DecodedToken;
+export function verifyToken(
+  token: string,
+  opts?: { audience?: string | string[] }
+): DecodedToken {
+  const verified = jwt.verify(token, env.JWT_SECRET, {
+    audience: opts?.audience as jwt.VerifyOptions['audience'],
+  });
+  return verified as unknown as DecodedToken;
 }
 
 /** Revokes a token until its natural expiry (used by logout). */

@@ -7,6 +7,8 @@ import jobsRoutes from '../modules/jobs/jobs.routes';
 import billingRoutes from '../modules/billing/billing.routes';
 import aiRoutes from '../modules/ai/ai.routes';
 import { cloudRoutes } from '../modules/cloud/cloud.routes';
+import enterpriseRoutes from '../modules/enterprise/enterprise.routes';
+import adminRoutes from '../modules/admin/admin.routes';
 
 const router = Router();
 
@@ -21,5 +23,7 @@ router.use('/jobs', jobsRoutes);
 router.use('/billing', billingRoutes);
 router.use('/ai', aiRoutes);
 router.use('/cloud', cloudRoutes);
+router.use('/enterprise', enterpriseRoutes);
+router.use('/admin', adminRoutes);
 
 export default router;

@@ -2,6 +2,8 @@ import type { Pool, PoolConnection } from 'mysql2/promise';
 import { logger } from './logger';
 import { ensureColumn, ensureIndex } from './ddl';
 import { initializeSigningSchema } from './signingSchema';
+import { initializeByocSchema } from './byocSchema';
+import { seedPlatformAdmin } from './seedPlatformAdmin';
 import { db } from './database';
 
 export { db } from './database';
@@ -105,6 +107,8 @@ async function initializeDatabase(dbPool: Pool): Promise<void> {
     await ensureIndex(conn, 'tbl_cloud_integration', 'idx_cloud_user', 'userId');
 
     await initializeSigningSchema(conn);
+    await initializeByocSchema(conn);
+    await seedPlatformAdmin(conn);
 
     logger.info('Prefixed database tables (tbl_) initialization complete.');
   } catch (err: any) {

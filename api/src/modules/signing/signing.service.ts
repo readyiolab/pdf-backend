@@ -1,9 +1,6 @@
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
-  s3,
   getSignedDownloadUrl,
   getSignedViewUrl,
   hashObject,
@@ -17,6 +14,7 @@ import { env } from '../../config/env';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { detectFileCategory } from '../../../../shared/fileType';
 import { PLAN_LIMITS } from '../../../../shared/constants';
+import { getStorageForUser } from '../../lib/storage';
 import {
   RECIPIENT_COLORS,
   SIGNING_LIMITS,
@@ -43,9 +41,26 @@ import type {
  */
 const SIGNING_PREFIX = 'pdf-saas-signing';
 
-function documentKey(userId: string, documentId: string, fileName: string): string {
+function documentKey(
+  userId: string,
+  documentId: string,
+  fileName: string,
+  organizationId: string | null
+): string {
   const sanitized = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  if (organizationId) {
+    return `org-${organizationId}/signing/doc-${documentId}/original_${sanitized}`;
+  }
   return `${SIGNING_PREFIX}/user-${userId}/doc-${documentId}/original_${sanitized}`;
+}
+
+function isOwnedSigningKey(
+  fileKey: string,
+  userId: string,
+  organizationId: string | null
+): boolean {
+  if (organizationId && fileKey.startsWith(`org-${organizationId}/signing/`)) return true;
+  return fileKey.startsWith(`${SIGNING_PREFIX}/user-${userId}/`);
 }
 
 /** Strips secrets that must never leave the server, whatever the caller asks for. */
@@ -154,17 +169,9 @@ export const signingService = {
     // The document id is minted here so the object lands in its final
     // doc-scoped folder, rather than being moved after the row is created.
     const documentId = crypto.randomUUID();
-    const fileKey = documentKey(userId, documentId, fileName);
-
-    const uploadUrl = await getSignedUrl(
-      s3,
-      new PutObjectCommand({
-        Bucket: env.DO_SPACES_BUCKET,
-        Key: fileKey,
-        ContentType: contentType,
-      }),
-      { expiresIn: env.PRESIGN_TTL_SECONDS }
-    );
+    const { storage, organizationId } = await getStorageForUser(userId);
+    const fileKey = documentKey(userId, documentId, fileName, organizationId);
+    const uploadUrl = await storage.presignPut(fileKey, contentType, env.PRESIGN_TTL_SECONDS);
 
     return { documentId, uploadUrl, fileKey };
   },
@@ -183,30 +190,31 @@ export const signingService = {
     // authenticated user could pass any key in the bucket — including another
     // tenant's document or a results object — and have us mint a document that
     // hands back signed URLs to it.
-    if (!fileKey.startsWith(`${SIGNING_PREFIX}/user-${userId}/`)) {
+    const { organizationId, storageBindingId } = await getStorageForUser(userId);
+    if (!isOwnedSigningKey(fileKey, userId, organizationId)) {
       throw new AppError('Invalid file key for this account.', 400);
     }
 
     let size: number;
     try {
-      size = await headObjectSize(fileKey);
+      size = await headObjectSize(fileKey, storageBindingId);
     } catch {
       throw new AppError('The uploaded file could not be found. Please re-upload.', 400);
     }
 
     if (size <= 0) {
-      await deleteObject(fileKey);
+      await deleteObject(fileKey, storageBindingId);
       throw new AppError('The uploaded file is empty.', 400);
     }
     if (size > SIGNING_LIMITS.maxFileSize) {
-      await deleteObject(fileKey);
+      await deleteObject(fileKey, storageBindingId);
       const maxMb = Math.floor(SIGNING_LIMITS.maxFileSize / (1024 * 1024));
       throw new AppError(`File size exceeds the ${maxMb}MB limit for signing documents.`, 400);
     }
 
-    const head = await readObjectHead(fileKey, 1024);
+    const head = await readObjectHead(fileKey, 1024, storageBindingId);
     if (detectFileCategory(head) !== 'pdf') {
-      await deleteObject(fileKey);
+      await deleteObject(fileKey, storageBindingId);
       throw new AppError('Only PDF files can be sent for signature.', 400);
     }
 
@@ -214,7 +222,7 @@ export const signingService = {
     // baseline the completion certificate cites to prove the signed output
     // derives from the document the parties actually saw. Taking it later —
     // after any tool has touched the file — would prove nothing.
-    const originalHash = await hashObject(fileKey);
+    const originalHash = await hashObject(fileKey, storageBindingId);
 
     // Recover the id embedded in the key at presign time so the row and the
     // object folder agree.
@@ -226,18 +234,29 @@ export const signingService = {
     try {
       await conn.query(
         `INSERT INTO tbl_sign_document
-           (id, ownerId, title, status, fileKey, fileName, fileSize, pageCount, currentVersion, originalHash, expiresAt)
-         VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, 1, ?, ?)`,
-        [documentId, userId, docTitle, fileKey, fileName, size, pageCount ?? 0, originalHash, expiresAt]
+           (id, ownerId, title, status, fileKey, storageBindingId, fileName, fileSize, pageCount, currentVersion, originalHash, expiresAt)
+         VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, 1, ?, ?)`,
+        [
+          documentId,
+          userId,
+          docTitle,
+          fileKey,
+          storageBindingId,
+          fileName,
+          size,
+          pageCount ?? 0,
+          originalHash,
+          expiresAt,
+        ]
       );
 
       // v1 is the pristine original. Every later finalization appends a row;
       // this one is never mutated, which is what "preserve the original
       // document" means in practice.
       await conn.query(
-        `INSERT INTO tbl_sign_document_version (id, documentId, version, fileKey, fileSize, sha256, label)
-         VALUES (?, ?, 1, ?, ?, ?, 'Original')`,
-        [crypto.randomUUID(), documentId, fileKey, size, originalHash]
+        `INSERT INTO tbl_sign_document_version (id, documentId, version, fileKey, storageBindingId, fileSize, sha256, label)
+         VALUES (?, ?, 1, ?, ?, ?, ?, 'Original')`,
+        [crypto.randomUUID(), documentId, fileKey, storageBindingId, size, originalHash]
       );
 
       await db.commit(conn);
@@ -420,7 +439,7 @@ export const signingService = {
 
     // Longer than DOWNLOAD_URL_TTL: a viewer session outlives a click-to-save,
     // and pdf.js re-requests byte ranges for the life of the open document.
-    return { url: await getSignedViewUrl(key, 3600) };
+    return { url: await getSignedViewUrl(key, 3600, doc.storageBindingId ?? null) };
   },
 
   async updateDocument(documentId: string, userId: string, input: UpdateDocumentInput) {
@@ -476,7 +495,10 @@ export const signingService = {
     // first and the DB delete failed, the document would still be listed but
     // its bytes would be gone — a far worse state to be in.
     await db.delete('tbl_sign_document', 'id = ?', [documentId]);
-    await deleteObjects([doc.fileKey, ...versions.map((v: any) => v.fileKey)]);
+    await deleteObjects(
+      [doc.fileKey, ...versions.map((v: any) => v.fileKey)],
+      doc.storageBindingId ?? null
+    );
 
     return { id: documentId, deleted: true };
   },
@@ -777,7 +799,7 @@ export const signingService = {
 
     const suffix = row.version === 1 ? 'original' : 'signed';
     const name = `${doc.title.replace(/[^a-zA-Z0-9 _-]/g, '')} (${suffix}).pdf`;
-    return { url: await getSignedDownloadUrl(row.fileKey, name) };
+    return { url: await getSignedDownloadUrl(row.fileKey, name, undefined, doc.storageBindingId ?? null) };
   },
 
   /**
@@ -803,7 +825,7 @@ export const signingService = {
     }
 
     const name = `${doc.title.replace(/[^a-zA-Z0-9 _-]/g, '')} (certificate).pdf`;
-    return { url: await getSignedDownloadUrl(row.certificateKey, name) };
+    return { url: await getSignedDownloadUrl(row.certificateKey, name, undefined, doc.storageBindingId ?? null) };
   },
 
   /** Ownership gate for the audit endpoint. */

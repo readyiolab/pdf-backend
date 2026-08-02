@@ -71,11 +71,15 @@ export async function pushToQueue(
   tool: ToolName,
   inputFiles: string[],
   options: Record<string, any>,
-  plan: 'FREE' | 'PRO' = 'FREE'
+  plan: 'FREE' | 'PRO' | 'ENTERPRISE' = 'FREE',
+  organizationId: string | null = null,
+  storageBindingId: string | null = null
 ) {
   const payload: JobPayload = {
     jobId,
     userId,
+    organizationId: organizationId ?? null,
+    storageBindingId: storageBindingId ?? null,
     tool,
     inputFiles,
     options,
@@ -85,7 +89,7 @@ export async function pushToQueue(
   const queue = isHeavy ? heavyQueue : lightQueue;
   const queueName = isHeavy ? HEAVY_JOBS_QUEUE : LIGHT_JOBS_QUEUE;
 
-  const priority = plan === 'PRO' ? 1 : 10;
+  const priority = plan === 'FREE' ? 10 : 1;
 
   logger.info({ jobId, tool, queueName, priority }, 'Pushing job to BullMQ');
 
