@@ -2,6 +2,7 @@ import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDa
 import { env } from '../config/env';
 import { logger } from './logger';
 import { withRetry } from './retry';
+import { normalizeOrderBy } from './databaseOrderBy';
 
 /** MySQL / network errors worth retrying. */
 const RETRYABLE_DB_ERRORS = new Set([
@@ -144,11 +145,7 @@ export class Database {
     print = false
   ): Promise<T[]> {
     const wr = where ? `WHERE ${where}` : '';
-    let ob = (orderby || '').trim();
-    // Callers may pass "createdAt DESC" or "ORDER BY createdAt DESC" — normalize.
-    if (ob && !/^(ORDER\s+BY|LIMIT)\b/i.test(ob)) {
-      ob = `ORDER BY ${ob}`;
-    }
+    const ob = normalizeOrderBy(orderby);
     const sql = `SELECT ${column} FROM ${tbl_name} ${wr} ${ob}`.trim();
     if (print) logger.debug({ sql, params }, 'SQL SELECT_ALL');
     return this._executeWithRetry(async () => {
