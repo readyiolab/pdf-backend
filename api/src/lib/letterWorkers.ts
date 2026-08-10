@@ -36,24 +36,58 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   }
 }
 
+async function resolveChromeExecutable(): Promise<string | undefined> {
+  const fsSync = await import('fs');
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_BIN,
+    process.env.CHROMIUM_PATH,
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+  ].filter(Boolean) as string[];
+
+  for (const p of candidates) {
+    try {
+      if (fsSync.existsSync(p)) return p;
+    } catch {
+      /* try next */
+    }
+  }
+
+  // Prefer Puppeteer's downloaded Chrome (npx puppeteer browsers install chrome)
+  try {
+    const puppeteer = await import('puppeteer');
+    const bundled = puppeteer.executablePath();
+    if (bundled && fsSync.existsSync(bundled)) return bundled;
+  } catch {
+    /* ignore */
+  }
+
+  return undefined;
+}
+
 async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<void> {
   // Dynamic import so API still boots if puppeteer isn't installed yet
   const puppeteer = await import('puppeteer');
-  const executablePath =
-    process.env.PUPPETEER_EXECUTABLE_PATH ||
-    process.env.CHROME_BIN ||
-    process.env.CHROMIUM_PATH ||
-    undefined;
+  const executablePath = await resolveChromeExecutable();
 
   logger.info(
     { executablePath: executablePath || '(puppeteer-default)' },
     'Launching Chrome for letter PDF'
   );
 
+  if (!executablePath) {
+    throw new Error(
+      'Chrome/Chromium not found. Set PUPPETEER_EXECUTABLE_PATH in api/.env to a real chrome binary, or run: npx puppeteer browsers install chrome'
+    );
+  }
+
   const browser = await withTimeout(
     puppeteer.launch({
       headless: true,
-      ...(executablePath ? { executablePath } : {}),
+      executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
