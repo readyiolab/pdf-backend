@@ -522,18 +522,30 @@ export const lettersController = {
   async bootstrap(req: Request, res: Response, next: NextFunction) {
     try {
       const org = await orgsService.createOrg(req.user.id);
-      // attach org context manually for subsequent calls in this handler
+      if (!org.organization?.id) {
+        throw new AppError('Organization could not be created', 500);
+      }
       req.orgContext = {
-        organizationId: org.organization!.id,
+        organizationId: org.organization.id,
         role: org.role as any,
         membershipId: org.membershipId,
-        orgName: org.organization!.name,
+        orgName: org.organization.name,
       };
-      const starters = await templateService.ensureStarters(
-        req.orgContext.organizationId,
-        req.user.id
-      );
-      res.json({ org, starters });
+      let starters = { seeded: 0, templates: [] as any[] };
+      let warning: string | undefined;
+      try {
+        starters = await templateService.ensureStarters(
+          req.orgContext.organizationId,
+          req.user.id
+        );
+      } catch (err) {
+        const e = err as { sqlMessage?: string; message?: string; code?: string };
+        warning =
+          e.sqlMessage ||
+          e.message ||
+          'Starter templates could not be seeded — check letter schema DDL on API boot.';
+      }
+      res.json({ org, starters, warning });
     } catch (e) {
       next(e);
     }

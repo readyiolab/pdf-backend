@@ -35,16 +35,39 @@ async function writeLetterAudit(
   metadata: Record<string, unknown> = {},
   aiAssisted = false
 ): Promise<void> {
-  await db.insert('tbl_letter_audit', {
-    id: newId(),
-    organizationId,
-    userId,
-    action,
-    entityType,
-    entityId,
-    metadataJson: JSON.stringify(metadata),
-    aiAssisted: aiAssisted ? 1 : 0,
-  });
+  try {
+    await db.insert('tbl_letter_audit', {
+      id: newId(),
+      organizationId,
+      userId,
+      action,
+      entityType,
+      entityId,
+      metadataJson: JSON.stringify(metadata),
+      aiAssisted: aiAssisted ? 1 : 0,
+    });
+  } catch (err) {
+    // Audit must never block org/letter flows (e.g. table not yet migrated).
+    logger.warn({ err, action, organizationId }, 'letter audit write failed');
+  }
+}
+
+function mapSchemaError(err: unknown, context: string): never {
+  const e = err as { code?: string; errno?: number; message?: string; sqlMessage?: string };
+  const msg = e.sqlMessage || e.message || String(err);
+  if (
+    e.code === 'ER_NO_SUCH_TABLE' ||
+    e.errno === 1146 ||
+    /doesn't exist/i.test(msg) ||
+    e.code === 'ER_BAD_FIELD_ERROR' ||
+    e.errno === 1054
+  ) {
+    throw new AppError(
+      `Letter Studio database schema is not ready (${context}). Redeploy/restart the API so boot DDL can create tbl_org_user and letter tables.`,
+      503
+    );
+  }
+  throw err instanceof Error ? err : new Error(msg);
 }
 
 export const orgsService = {
@@ -66,6 +89,14 @@ export const orgsService = {
    * when name is omitted (auto-create personal org for Letter Studio).
    */
   async createOrg(userId: string, name?: string) {
+    try {
+      return await this._createOrgInner(userId, name);
+    } catch (err) {
+      mapSchemaError(err, 'createOrg');
+    }
+  },
+
+  async _createOrgInner(userId: string, name?: string) {
     const user = await db.select('tbl_user', 'id, email, name, plan, organizationId', 'id = ?', [userId]);
     if (!user) throw new AppError('User not found', 404);
 
@@ -134,6 +165,8 @@ export const orgsService = {
     const slug = await uniqueSlug(orgName);
     const plan = user.plan === 'ENTERPRISE' ? 'ENTERPRISE' : user.plan || 'FREE';
 
+    // Do not set letterRetentionDays here — column is added by boot DDL with DEFAULT 30.
+    // Inserting it on older deploys (before ensureColumn runs) caused 500s.
     await db.insert('tbl_organization', {
       id,
       name: orgName,
@@ -141,7 +174,6 @@ export const orgsService = {
       plan,
       status: 'ACTIVE',
       ownerUserId: userId,
-      letterRetentionDays: 30,
     });
 
     // Storage config row so BYOC paths keep working if they upgrade later
