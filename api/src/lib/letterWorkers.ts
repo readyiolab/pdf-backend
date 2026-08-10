@@ -25,13 +25,25 @@ function parseJson<T>(value: unknown, fallback: T): T {
 async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<void> {
   // Dynamic import so API still boots if puppeteer isn't installed yet
   const puppeteer = await import('puppeteer');
+  const executablePath =
+    process.env.PUPPETEER_EXECUTABLE_PATH ||
+    process.env.CHROME_BIN ||
+    process.env.CHROMIUM_PATH ||
+    undefined;
   const browser = await puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    ...(executablePath ? { executablePath } : {}),
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--font-render-hinting=none',
+    ],
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'load' });
+    await page.setContent(html, { waitUntil: 'load', timeout: 60_000 });
     await page.pdf({
       path: outPath,
       format: 'A4',
@@ -171,25 +183,49 @@ async function processGenerateChunk(job: Job<LetterGenerateJob>) {
       generated += 1;
     } catch (err) {
       failed += 1;
-      logger.error(
-        { employeeId, batchId, err: (err as Error).message },
-        'Letter PDF generation failed'
-      );
+      const message = ((err as Error).message || 'PDF generation failed').slice(0, 500);
+      logger.error({ employeeId, batchId, err: message }, 'Letter PDF generation failed');
+      // Mark row so it leaves the "pending" bucket and the batch can finish
+      try {
+        const prevFlags = parseJson<Array<{ code: string; message: string }>>(
+          emp.anomalyFlagsJson,
+          []
+        ).filter((f) => f.code !== 'GENERATION_FAILED');
+        await db.update(
+          'tbl_letter_batch_employee',
+          {
+            sendStatus: 'FAILED',
+            anomalyFlagsJson: JSON.stringify([
+              ...prevFlags,
+              { code: 'GENERATION_FAILED', message },
+            ]),
+          },
+          'id = ?',
+          [employeeId]
+        );
+      } catch (markErr) {
+        logger.error(
+          { employeeId, err: (markErr as Error).message },
+          'Failed to mark employee generation error'
+        );
+      }
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
-  // Update batch counters
+  // Update batch counters — exclude FAILED rows from pending so the batch can complete
   const counts = await db.queryAll<any>(
     `SELECT
        SUM(CASE WHEN pdfKey IS NOT NULL AND pdfKey <> '' THEN 1 ELSE 0 END) AS generatedCount,
-       SUM(CASE WHEN validationStatus IN ('READY','WARNING') AND (pdfKey IS NULL OR pdfKey = '') THEN 1 ELSE 0 END) AS pending
+       SUM(CASE WHEN validationStatus IN ('READY','WARNING')
+                 AND (pdfKey IS NULL OR pdfKey = '')
+                 AND IFNULL(sendStatus, 'PENDING') <> 'FAILED' THEN 1 ELSE 0 END) AS pendingCount
      FROM tbl_letter_batch_employee WHERE batchId = ?`,
     [batchId]
   );
   const generatedCount = Number(counts[0]?.generatedCount || 0);
-  const pending = Number(counts[0]?.pending || 0);
+  const pending = Number(counts[0]?.pendingCount || 0);
   const prevFailed = Number(batch.failedCount || 0);
 
   await db.update(

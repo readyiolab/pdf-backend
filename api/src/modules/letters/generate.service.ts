@@ -182,23 +182,70 @@ export const generateService = {
       `SELECT
          SUM(CASE WHEN pdfKey IS NOT NULL AND pdfKey <> '' THEN 1 ELSE 0 END) AS generatedCount,
          SUM(CASE WHEN validationStatus = 'BLOCKED' THEN 1 ELSE 0 END) AS skippedCount,
-         SUM(CASE WHEN validationStatus IN ('READY','WARNING') AND (pdfKey IS NULL OR pdfKey = '') THEN 1 ELSE 0 END) AS pendingCount,
+         SUM(CASE WHEN validationStatus IN ('READY','WARNING')
+                   AND (pdfKey IS NULL OR pdfKey = '')
+                   AND IFNULL(sendStatus, 'PENDING') <> 'FAILED' THEN 1 ELSE 0 END) AS pendingCount,
          SUM(CASE WHEN sendStatus = 'SENT' THEN 1 ELSE 0 END) AS sentCount,
          SUM(CASE WHEN sendStatus = 'FAILED' THEN 1 ELSE 0 END) AS sendFailedCount
        FROM tbl_letter_batch_employee WHERE batchId = ?`,
       [batchId]
     );
     const row = counts[0] || {};
+    const generated = Number(row.generatedCount || 0);
+    let pending = Number(row.pendingCount || 0);
+    const failed = Number(batch.failedCount || 0);
+
+    // Heal stuck batches from before failures were marked on rows:
+    // all attempts failed, nothing uploaded, still showing as pending forever.
+    if (
+      batch.status === 'GENERATING' &&
+      generated === 0 &&
+      failed > 0 &&
+      pending > 0 &&
+      failed >= pending
+    ) {
+      pending = 0;
+      await orgScope.update(
+        organizationId,
+        'tbl_letter_batch',
+        { status: 'GENERATED', generatedAt: new Date() },
+        'id = ?',
+        [batchId]
+      );
+    }
+
+    const status =
+      pending === 0 && batch.status === 'GENERATING' ? 'GENERATED' : batch.status;
+
+    // Surface a sample generation error for the UI
+    let lastError: string | null = null;
+    if (failed > 0 && generated === 0) {
+      const errRows = await db.queryAll<any>(
+        `SELECT anomalyFlagsJson FROM tbl_letter_batch_employee
+          WHERE batchId = ? AND sendStatus = 'FAILED' LIMIT 1`,
+        [batchId]
+      );
+      const flags =
+        typeof errRows[0]?.anomalyFlagsJson === 'string'
+          ? JSON.parse(errRows[0].anomalyFlagsJson || '[]')
+          : errRows[0]?.anomalyFlagsJson || [];
+      const genErr = (flags as any[]).find((f) => f.code === 'GENERATION_FAILED');
+      lastError =
+        genErr?.message ||
+        'PDF creation failed on the server. Ask your admin to check Chromium/Puppeteer and storage logs.';
+    }
+
     return {
-      status: batch.status,
-      generated: Number(row.generatedCount || 0),
+      status,
+      generated,
       skipped: Number(row.skippedCount || 0),
-      pending: Number(row.pendingCount || 0),
+      pending,
       sent: Number(row.sentCount || 0),
       sendFailed: Number(row.sendFailedCount || 0),
-      failed: Number(batch.failedCount || 0),
+      failed,
       totalRows: Number(batch.totalRows || 0),
       aiSummary: batch.aiSummary,
+      lastError,
     };
   },
 };

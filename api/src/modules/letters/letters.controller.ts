@@ -337,6 +337,7 @@ export const lettersController = {
   },
   async generateProgress(req: Request, res: Response, next: NextFunction) {
     try {
+      res.setHeader('Cache-Control', 'no-store');
       res.json(
         await generateService.progress(req.orgContext!.organizationId, req.params.batchId)
       );
