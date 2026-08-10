@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { env } from '../../config/env';
-import type { AiMessage, AiProvider } from './provider';
+import type { AiCompletion, AiMessage, AiProvider, VisionMessage } from './provider';
 
 /**
  * OpenAI implementation of the AiProvider contract.
@@ -9,6 +9,9 @@ import type { AiMessage, AiProvider } from './provider';
  * call). Uses the chat completions API with text messages — we extract PDF text
  * upstream, so there's no dependency on OpenAI's file-input surface, which keeps
  * this portable across the whole gpt-4o / gpt-4.1 family.
+ *
+ * completeVision uses the same chat completions endpoint with multimodal
+ * content parts (image_url) for diagram image-to-JSON.
  */
 let client: OpenAI | null = null;
 
@@ -59,5 +62,22 @@ export const openAiProvider: AiProvider = {
       const delta = chunk.choices[0]?.delta?.content;
       if (delta) yield delta;
     }
+  },
+
+  async completeVision(messages: VisionMessage[], opts = {}): Promise<AiCompletion> {
+    const res = await getClient().chat.completions.create({
+      model: opts.model || env.AI_MODEL,
+      max_tokens: opts.maxTokens ?? 2048,
+      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    });
+
+    const text = (res.choices[0]?.message?.content ?? '').trim();
+    return {
+      text,
+      usage: {
+        inputTokens: res.usage?.prompt_tokens ?? 0,
+        outputTokens: res.usage?.completion_tokens ?? 0,
+      },
+    };
   },
 };

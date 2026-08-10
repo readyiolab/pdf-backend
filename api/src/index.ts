@@ -10,6 +10,8 @@ import healthRoutes from './modules/health/health.routes';
 import webhookRoutes from './modules/webhooks/webhooks.routes';
 import signingRoutes from './modules/signing/signing.routes';
 import publicSigningRoutes from './modules/signing/public.routes';
+import diagramsRoutes from './modules/diagrams/diagrams.routes';
+import diagramPublicRoutes from './modules/diagrams/public.routes';
 import { rateLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler } from './middleware/errorHandler.middleware';
 import { createDashboard } from './lib/bullBoard';
@@ -103,6 +105,21 @@ app.use(
   '/api/sign',
   express.json({ limit: env.SIGNING_MAX_JSON_BODY }),
   publicSigningRoutes
+);
+
+// Diagram editor saves can exceed the 100kb global JSON cap. Mount before the
+// global parser (same pattern as signing / documents).
+app.use(
+  '/api/diagrams/shared',
+  rateLimiter,
+  express.json({ limit: '2mb' }),
+  diagramPublicRoutes
+);
+app.use(
+  '/api/diagrams',
+  rateLimiter,
+  express.json({ limit: '2mb' }),
+  diagramsRoutes
 );
 
 // Parse JSON bodies with a strict size limit (large-payload DoS protection)

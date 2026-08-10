@@ -7,6 +7,17 @@ export interface AiMessage {
   content: string;
 }
 
+export interface VisionPart {
+  type: 'text' | 'image_url';
+  text?: string;
+  image_url?: { url: string };
+}
+
+export type VisionMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string | VisionPart[];
+};
+
 export interface AiUsage {
   inputTokens: number;
   outputTokens: number;
@@ -24,6 +35,8 @@ export interface AiCompletion {
  * service never imports a vendor SDK directly. OpenAI is the active
  * implementation; a Claude implementation would satisfy the same interface and
  * plug in via the factory below, with no change to the service or routes.
+ *
+ * completeVision is optional — used by Diagram image-to-diagram.
  */
 export interface AiProvider {
   readonly name: string;
@@ -31,6 +44,10 @@ export interface AiProvider {
   complete(messages: AiMessage[], opts?: { maxTokens?: number }): Promise<AiCompletion>;
   /** Streams the answer as text deltas; the final delta may be empty. */
   streamText(messages: AiMessage[], opts?: { maxTokens?: number }): AsyncIterable<string>;
+  completeVision?(
+    messages: VisionMessage[],
+    opts?: { maxTokens?: number; model?: string }
+  ): Promise<AiCompletion>;
 }
 
 /** Returns the configured provider. Add cases here to support more vendors. */

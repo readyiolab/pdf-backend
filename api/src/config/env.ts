@@ -169,6 +169,8 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   // Model id — set one your key has access to. gpt-4o-mini is the cheapest
   // capable tier for high-volume PDF Q&A; swap here for more capability.
+  // Also used by Diagram AI (text + vision). Prefer a vision-capable model
+  // (e.g. gpt-4o-mini / gpt-4o) for image-to-diagram.
   AI_MODEL: z.string().default('gpt-4o-mini'),
   // Hard ceiling on extracted document text sent to the model (characters).
   // ~4 chars/token, so 400k ≈ 100k tokens — within a 128k context with room
