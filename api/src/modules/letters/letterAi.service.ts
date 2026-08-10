@@ -8,6 +8,9 @@ import { writeLetterAudit } from '../orgs/orgs.service';
 import { SYSTEM_FIELDS, STARTER_TEMPLATES, extractFieldTokens } from './letterFields';
 import { orgScope } from './orgScope';
 import { batchService } from './batch.service';
+import { parseModelJson } from './parseModelJson';
+
+export { parseModelJson } from './parseModelJson';
 
 function newId() {
   return crypto.randomUUID();
@@ -82,6 +85,54 @@ function repairTokens(contentJson: any, allowed: string[]): { content: any; repa
   }
 }
 
+function fallbackDraftDoc(instruction: string): any {
+  return {
+    type: 'doc',
+    content: [
+      {
+        type: 'heading',
+        attrs: { level: 2 },
+        content: [{ type: 'text', text: 'Employment Letter' }],
+      },
+      {
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: 'Dear ' },
+          { type: 'text', text: '{{Employee_Name}}' },
+          { type: 'text', text: ',' },
+        ],
+      },
+      {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text:
+              instruction.slice(0, 400) ||
+              'Please find the details of this letter below.',
+          },
+        ],
+      },
+      {
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: 'Effective date: ' },
+          { type: 'text', text: '{{Effective_Date}}' },
+          { type: 'text', text: '.' },
+        ],
+      },
+      {
+        type: 'paragraph',
+        content: [{ type: 'text', text: 'Warm regards,' }],
+      },
+      {
+        type: 'paragraph',
+        content: [{ type: 'text', text: '{{Manager_Name}}' }],
+      },
+    ],
+  };
+}
+
 /** Plain TypeScript draft → validate → refine loop (no LangGraph). */
 export async function draftValidateRefine(opts: {
   instruction: string;
@@ -112,23 +163,36 @@ Return TipTap JSON only.`;
   );
 
   let contentJson: any;
+  let usedFallback = false;
   try {
-    const cleaned = first.text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-    contentJson = JSON.parse(cleaned);
+    contentJson = parseModelJson(first.text);
   } catch {
-    // Refine: ask model to fix JSON
-    const repair = await provider.complete(
-      [
-        { role: 'system', content: 'Fix the following into valid TipTap JSON only. No markdown.' },
-        { role: 'user', content: first.text },
-      ],
-      { maxTokens: 2000 }
-    );
-    const cleaned = repair.text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-    contentJson = JSON.parse(cleaned);
+    try {
+      const repair = await provider.complete(
+        [
+          {
+            role: 'system',
+            content:
+              'Fix the following into valid TipTap JSON only. Shape: {"type":"doc","content":[...]}. No markdown.',
+          },
+          { role: 'user', content: first.text },
+        ],
+        { maxTokens: 2000 }
+      );
+      contentJson = parseModelJson(repair.text);
+    } catch {
+      usedFallback = true;
+      contentJson = fallbackDraftDoc(opts.instruction);
+    }
+  }
+
+  if (!contentJson || contentJson.type !== 'doc' || !Array.isArray(contentJson.content)) {
+    usedFallback = true;
+    contentJson = fallbackDraftDoc(opts.instruction);
   }
 
   let { content, repaired } = repairTokens(contentJson, allowed);
+  if (usedFallback) repaired = [...repaired, 'used-fallback-doc'];
   const tokens = extractFieldTokens(content);
 
   // Second pass if unknown tokens remain
@@ -145,8 +209,7 @@ Return TipTap JSON only.`;
       { maxTokens: 2000 }
     );
     try {
-      const cleaned = refine.text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-      const parsed = JSON.parse(cleaned);
+      const parsed = parseModelJson(refine.text);
       const second = repairTokens(parsed, allowed);
       content = second.content;
       repaired = [...repaired, ...second.repaired];
