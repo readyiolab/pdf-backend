@@ -36,7 +36,43 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   }
 }
 
+let cachedChromePath: string | null | undefined;
+
+/**
+ * Puppeteer's own executablePath() only matches the version pinned in
+ * package.json, so a `puppeteer browsers install chrome` of any other build is
+ * invisible to it. Scan the download cache too before giving up.
+ */
+function scanPuppeteerCache(dir: string, fsSync: typeof import('fs')): string | undefined {
+  let versions: string[];
+  try {
+    versions = fsSync.readdirSync(path.join(dir, 'chrome'));
+  } catch {
+    return undefined;
+  }
+  // Newest build wins
+  for (const version of versions.sort().reverse()) {
+    for (const platform of ['chrome-linux64', 'chrome-linux', 'chrome-headless-shell-linux64']) {
+      const binary = path.join(
+        dir,
+        'chrome',
+        version,
+        platform,
+        platform.startsWith('chrome-headless-shell') ? 'chrome-headless-shell' : 'chrome'
+      );
+      try {
+        if (fsSync.existsSync(binary)) return binary;
+      } catch {
+        /* try next */
+      }
+    }
+  }
+  return undefined;
+}
+
 async function resolveChromeExecutable(): Promise<string | undefined> {
+  if (cachedChromePath !== undefined) return cachedChromePath ?? undefined;
+
   const fsSync = await import('fs');
   const candidates = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -46,25 +82,47 @@ async function resolveChromeExecutable(): Promise<string | undefined> {
     '/usr/bin/google-chrome',
     '/usr/bin/chromium-browser',
     '/usr/bin/chromium',
+    '/snap/bin/chromium',
   ].filter(Boolean) as string[];
 
   for (const p of candidates) {
     try {
-      if (fsSync.existsSync(p)) return p;
+      if (fsSync.existsSync(p)) {
+        cachedChromePath = p;
+        return p;
+      }
     } catch {
       /* try next */
     }
   }
 
-  // Prefer Puppeteer's downloaded Chrome (npx puppeteer browsers install chrome)
   try {
     const puppeteer = await import('puppeteer');
     const bundled = await Promise.resolve(puppeteer.executablePath());
-    if (bundled && fsSync.existsSync(bundled)) return bundled;
+    if (bundled && fsSync.existsSync(bundled)) {
+      cachedChromePath = bundled;
+      return bundled;
+    }
   } catch {
     /* ignore */
   }
 
+  const cacheDirs = [
+    process.env.PUPPETEER_CACHE_DIR,
+    path.join(os.homedir(), '.cache', 'puppeteer'),
+    '/root/.cache/puppeteer',
+  ].filter(Boolean) as string[];
+
+  for (const dir of cacheDirs) {
+    const found = scanPuppeteerCache(dir, fsSync);
+    if (found) {
+      cachedChromePath = found;
+      return found;
+    }
+  }
+
+  logger.error({ candidates, cacheDirs }, 'No Chrome binary found for letter PDF rendering');
+  cachedChromePath = null;
   return undefined;
 }
 
