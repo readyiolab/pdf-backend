@@ -62,7 +62,8 @@ export async function enqueueLetterGenerate(job: LetterGenerateJob, chunkIndex: 
     'Enqueueing letter-generate chunk'
   );
   await letterGenerateQueue.add('generate', job, {
-    jobId: `letter-gen-${job.batchId}-${chunkIndex}`,
+    // Unique per enqueue so retries are not blocked by a stuck prior jobId
+    jobId: `letter-gen-${job.batchId}-${chunkIndex}-${Date.now()}`,
   });
 }
 
@@ -72,6 +73,6 @@ export async function enqueueLetterSend(job: LetterSendJob, chunkIndex: number) 
     'Enqueueing letter-send chunk'
   );
   await letterSendQueue.add('send', job, {
-    jobId: `letter-send-${job.batchId}-${chunkIndex}`,
+    jobId: `letter-send-${job.batchId}-${chunkIndex}-${Date.now()}`,
   });
 }

@@ -22,6 +22,20 @@ function parseJson<T>(value: unknown, fallback: T): T {
   }
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<void> {
   // Dynamic import so API still boots if puppeteer isn't installed yet
   const puppeteer = await import('puppeteer');
@@ -30,28 +44,48 @@ async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<vo
     process.env.CHROME_BIN ||
     process.env.CHROMIUM_PATH ||
     undefined;
-  const browser = await puppeteer.launch({
-    headless: true,
-    ...(executablePath ? { executablePath } : {}),
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--font-render-hinting=none',
-    ],
-  });
+
+  logger.info(
+    { executablePath: executablePath || '(puppeteer-default)' },
+    'Launching Chrome for letter PDF'
+  );
+
+  const browser = await withTimeout(
+    puppeteer.launch({
+      headless: true,
+      ...(executablePath ? { executablePath } : {}),
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--single-process',
+        '--no-zygote',
+        '--font-render-hinting=none',
+      ],
+      timeout: 30_000,
+    }),
+    45_000,
+    'Chrome launch'
+  );
+
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'load', timeout: 60_000 });
-    await page.pdf({
-      path: outPath,
-      format: 'A4',
-      printBackground: true,
-      margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' },
-    });
+    // domcontentloaded — don't wait on remote logo/letterhead images (they hang headless Chrome)
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await withTimeout(
+      page.pdf({
+        path: outPath,
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' },
+      }),
+      45_000,
+      'page.pdf'
+    );
   } finally {
-    await browser.close();
+    await browser.close().catch(() => undefined);
   }
 }
 
@@ -73,6 +107,11 @@ async function encryptPdfWithQpdf(inputPath: string, outputPath: string, userPas
 
 async function processGenerateChunk(job: Job<LetterGenerateJob>) {
   const { batchId, organizationId, employeeIds, userId } = job.data;
+  logger.info(
+    { batchId, organizationId, count: employeeIds.length, jobId: job.id },
+    'Letter generate chunk started'
+  );
+
   const batch = await db.select('tbl_letter_batch', '*', 'id = ? AND organizationId = ?', [
     batchId,
     organizationId,
