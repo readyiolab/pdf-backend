@@ -20,7 +20,7 @@ export const mailAccountService = {
       'id, provider, emailAddress, status, createdAt, updatedAt',
       'userId = ?',
       [userId],
-      'createdAt DESC'
+      'ORDER BY createdAt DESC'
     );
     return rows;
   },

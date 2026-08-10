@@ -32,7 +32,7 @@ export const batchService = {
       '*',
       '',
       [],
-      'createdAt DESC'
+      'ORDER BY createdAt DESC'
     );
     return rows.map(publicBatch);
   },

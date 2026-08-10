@@ -72,7 +72,7 @@ export const historyService = {
       '*',
       '',
       [],
-      'createdAt DESC'
+      'ORDER BY createdAt DESC'
     );
     return rows.slice(0, limit).map((r: any) => ({
       id: r.id,

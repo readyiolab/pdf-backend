@@ -21,7 +21,7 @@ function parseJsonField<T>(value: unknown, fallback: T): T {
 
 export const brandService = {
   async list(organizationId: string) {
-    return orgScope.selectAll(organizationId, 'tbl_letter_brand_profile', '*', '', [], 'createdAt DESC');
+    return orgScope.selectAll(organizationId, 'tbl_letter_brand_profile', '*', '', [], 'ORDER BY createdAt DESC');
   },
 
   async get(organizationId: string, id: string) {
@@ -110,7 +110,7 @@ export const templateService = {
       '*',
       '',
       [],
-      'updatedAt DESC'
+      'ORDER BY updatedAt DESC'
     );
     return rows.map(publicTemplate);
   },

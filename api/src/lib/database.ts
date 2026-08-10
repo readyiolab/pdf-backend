@@ -144,7 +144,12 @@ export class Database {
     print = false
   ): Promise<T[]> {
     const wr = where ? `WHERE ${where}` : '';
-    const sql = `SELECT ${column} FROM ${tbl_name} ${wr} ${orderby}`.trim();
+    let ob = (orderby || '').trim();
+    // Callers may pass "createdAt DESC" or "ORDER BY createdAt DESC" — normalize.
+    if (ob && !/^(ORDER\s+BY|LIMIT)\b/i.test(ob)) {
+      ob = `ORDER BY ${ob}`;
+    }
+    const sql = `SELECT ${column} FROM ${tbl_name} ${wr} ${ob}`.trim();
     if (print) logger.debug({ sql, params }, 'SQL SELECT_ALL');
     return this._executeWithRetry(async () => {
       const [results] = await this.getPool().execute<T[]>(sql, params);
