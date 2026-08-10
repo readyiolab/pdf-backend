@@ -176,22 +176,25 @@ export const generateService = {
   },
 
   async progress(organizationId: string, batchId: string) {
-    await batchService.get(organizationId, batchId);
+    const batch = await batchService.get(organizationId, batchId);
     const counts = await db.queryAll<any>(
       `SELECT
          SUM(CASE WHEN pdfKey IS NOT NULL AND pdfKey <> '' THEN 1 ELSE 0 END) AS generated,
          SUM(CASE WHEN validationStatus = 'BLOCKED' THEN 1 ELSE 0 END) AS skipped,
-         SUM(CASE WHEN validationStatus IN ('READY','WARNING') AND (pdfKey IS NULL OR pdfKey = '') THEN 1 ELSE 0 END) AS pending
+         SUM(CASE WHEN validationStatus IN ('READY','WARNING') AND (pdfKey IS NULL OR pdfKey = '') THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN sendStatus = 'SENT' THEN 1 ELSE 0 END) AS sent,
+         SUM(CASE WHEN sendStatus = 'FAILED' THEN 1 ELSE 0 END) AS sendFailed
        FROM tbl_letter_batch_employee WHERE batchId = ?`,
       [batchId]
     );
-    const batch = await batchService.get(organizationId, batchId);
     const row = counts[0] || {};
     return {
       status: batch.status,
       generated: Number(row.generated || 0),
       skipped: Number(row.skipped || 0),
       pending: Number(row.pending || 0),
+      sent: Number(row.sent || 0),
+      sendFailed: Number(row.sendFailed || 0),
       failed: Number(batch.failedCount || 0),
       totalRows: Number(batch.totalRows || 0),
       aiSummary: batch.aiSummary,

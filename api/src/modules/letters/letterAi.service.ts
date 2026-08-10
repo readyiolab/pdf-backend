@@ -247,12 +247,11 @@ export const letterAiService = {
 
   async retrieveSimilar(organizationId: string, query: string, limit = 3): Promise<string[]> {
     if (!isAiConfigured()) return [];
-    const rows = await orgScope.selectAll(
-      organizationId,
-      'tbl_letter_embedding',
-      '*',
-      `sourceType = 'template'`,
-      []
+    const rows = await db.queryAll<any>(
+      `SELECT chunkText, vectorJson FROM tbl_letter_embedding
+        WHERE organizationId = ? AND sourceType = 'template'
+        LIMIT 500`,
+      [organizationId]
     );
     if (!rows.length) return [];
     const [q] = await embedTexts([query]);
@@ -439,7 +438,7 @@ export const letterAiService = {
   async detectAnomalies(organizationId: string, userId: string, batchId: string) {
     await batchService.get(organizationId, batchId);
     const employees = await db.queryAll<any>(
-      `SELECT id, rowIndex, employeeDataJson, validationStatus FROM tbl_letter_batch_employee WHERE batchId = ?`,
+      `SELECT id, rowIndex, employeeDataJson, anomalyFlagsJson FROM tbl_letter_batch_employee WHERE batchId = ?`,
       [batchId]
     );
 
@@ -450,7 +449,10 @@ export const letterAiService = {
         typeof e.employeeDataJson === 'string'
           ? JSON.parse(e.employeeDataJson)
           : e.employeeDataJson || {},
-      validationStatus: e.validationStatus,
+      prevFlagsJson:
+        typeof e.anomalyFlagsJson === 'string'
+          ? e.anomalyFlagsJson
+          : JSON.stringify(e.anomalyFlagsJson || []),
     }));
 
     const increments: number[] = [];
@@ -469,6 +471,7 @@ export const letterAiService = {
     }
 
     let flagged = 0;
+    const updates: Array<{ id: string; flagsJson: string }> = [];
     for (const r of rows) {
       const flags: Array<{ code: string; message: string }> = [];
       const oldC = Number(String(r.data.Old_CTC || '').replace(/,/g, ''));
@@ -503,23 +506,28 @@ export const letterAiService = {
         }
       }
 
-      if (flags.length) {
-        flagged += 1;
-        // Soft flags only — never change validationStatus
-        await db.update(
-          'tbl_letter_batch_employee',
-          { anomalyFlagsJson: JSON.stringify(flags) },
-          'id = ?',
-          [r.id]
-        );
-      } else {
-        await db.update(
-          'tbl_letter_batch_employee',
-          { anomalyFlagsJson: JSON.stringify([]) },
-          'id = ?',
-          [r.id]
-        );
+      if (flags.length) flagged += 1;
+      const flagsJson = JSON.stringify(flags);
+      // Soft flags only — never change validationStatus; skip unchanged rows
+      if (flagsJson !== r.prevFlagsJson) {
+        updates.push({ id: r.id, flagsJson });
       }
+    }
+
+    const CHUNK = 200;
+    for (let i = 0; i < updates.length; i += CHUNK) {
+      const chunk = updates.slice(i, i + CHUNK);
+      const ids = chunk.map((u) => u.id);
+      const cases = chunk.map(() => 'WHEN ? THEN ?').join(' ');
+      const params: any[] = [];
+      for (const u of chunk) params.push(u.id, u.flagsJson);
+      params.push(...ids);
+      await db.query(
+        `UPDATE tbl_letter_batch_employee
+            SET anomalyFlagsJson = CASE id ${cases} END
+          WHERE id IN (${ids.map(() => '?').join(',')})`,
+        params
+      );
     }
 
     await writeLetterAudit(

@@ -66,15 +66,16 @@ export const historyService = {
   },
 
   async listAudit(organizationId: string, limit = 100) {
-    const rows = await orgScope.selectAll(
-      organizationId,
-      'tbl_letter_audit',
-      '*',
-      '',
-      [],
-      'ORDER BY createdAt DESC'
+    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+    const rows = await db.queryAll<any>(
+      `SELECT id, action, entityType, entityId, metadataJson, aiAssisted, userId, createdAt
+         FROM tbl_letter_audit
+        WHERE organizationId = ?
+        ORDER BY createdAt DESC
+        LIMIT ?`,
+      [organizationId, safeLimit]
     );
-    return rows.slice(0, limit).map((r: any) => ({
+    return rows.map((r: any) => ({
       id: r.id,
       action: r.action,
       entityType: r.entityType,

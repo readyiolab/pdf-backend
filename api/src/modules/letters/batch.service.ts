@@ -246,7 +246,7 @@ export const batchService = {
       : null;
 
     const employees = await db.queryAll<any>(
-      `SELECT * FROM tbl_letter_batch_employee WHERE batchId = ? ORDER BY rowIndex ASC`,
+      `SELECT id, rowIndex, employeeDataJson FROM tbl_letter_batch_employee WHERE batchId = ? ORDER BY rowIndex ASC`,
       [batchId]
     );
     if (!employees.length) throw new AppError('No employees in batch. Map your Excel first.', 400);
@@ -266,6 +266,7 @@ export const batchService = {
     let ready = 0;
     let warning = 0;
     let blocked = 0;
+    const updates: Array<{ id: string; status: string; errorsJson: string }> = [];
 
     for (const emp of employees) {
       const data = parseJson<Record<string, string>>(emp.employeeDataJson, {});
@@ -395,14 +396,30 @@ export const batchService = {
         ready += 1;
       }
 
-      await db.update(
-        'tbl_letter_batch_employee',
-        {
-          validationStatus: status,
-          validationErrorsJson: JSON.stringify(errors),
-        },
-        'id = ?',
-        [emp.id]
+      updates.push({
+        id: emp.id,
+        status,
+        errorsJson: JSON.stringify(errors),
+      });
+    }
+
+    // Chunked bulk updates — avoid one round-trip per row
+    const CHUNK = 200;
+    for (let i = 0; i < updates.length; i += CHUNK) {
+      const chunk = updates.slice(i, i + CHUNK);
+      const ids = chunk.map((u) => u.id);
+      const statusCases = chunk.map(() => 'WHEN ? THEN ?').join(' ');
+      const errCases = chunk.map(() => 'WHEN ? THEN ?').join(' ');
+      const params: any[] = [];
+      for (const u of chunk) params.push(u.id, u.status);
+      for (const u of chunk) params.push(u.id, u.errorsJson);
+      params.push(...ids);
+      await db.query(
+        `UPDATE tbl_letter_batch_employee
+            SET validationStatus = CASE id ${statusCases} END,
+                validationErrorsJson = CASE id ${errCases} END
+          WHERE id IN (${ids.map(() => '?').join(',')})`,
+        params
       );
     }
 
