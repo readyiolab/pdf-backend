@@ -194,6 +194,25 @@ export const generateService = {
     const generated = Number(row.generatedCount || 0);
     let pending = Number(row.pendingCount || 0);
     const failed = Number(batch.failedCount || 0);
+    const inFlight = ['GENERATING', 'GENERATED', 'SENDING', 'SENT'].includes(
+      String(batch.status || '')
+    );
+
+    // Not generating yet — don't report "pending" rows (that confuses the UI into polling forever)
+    if (!inFlight) {
+      return {
+        status: batch.status,
+        generated,
+        skipped: Number(row.skippedCount || 0),
+        pending: 0,
+        sent: Number(row.sentCount || 0),
+        sendFailed: Number(row.sendFailedCount || 0),
+        failed,
+        totalRows: Number(batch.totalRows || 0),
+        aiSummary: batch.aiSummary,
+        lastError: null,
+      };
+    }
 
     // Heal stuck batches from before failures were marked on rows:
     // all attempts failed, nothing uploaded, still showing as pending forever.
