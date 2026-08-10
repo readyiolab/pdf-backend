@@ -177,24 +177,25 @@ export const generateService = {
 
   async progress(organizationId: string, batchId: string) {
     const batch = await batchService.get(organizationId, batchId);
+    // Avoid reserved MySQL aliases (GENERATED is reserved in MySQL 8+)
     const counts = await db.queryAll<any>(
       `SELECT
-         SUM(CASE WHEN pdfKey IS NOT NULL AND pdfKey <> '' THEN 1 ELSE 0 END) AS generated,
-         SUM(CASE WHEN validationStatus = 'BLOCKED' THEN 1 ELSE 0 END) AS skipped,
-         SUM(CASE WHEN validationStatus IN ('READY','WARNING') AND (pdfKey IS NULL OR pdfKey = '') THEN 1 ELSE 0 END) AS pending,
-         SUM(CASE WHEN sendStatus = 'SENT' THEN 1 ELSE 0 END) AS sent,
-         SUM(CASE WHEN sendStatus = 'FAILED' THEN 1 ELSE 0 END) AS sendFailed
+         SUM(CASE WHEN pdfKey IS NOT NULL AND pdfKey <> '' THEN 1 ELSE 0 END) AS generatedCount,
+         SUM(CASE WHEN validationStatus = 'BLOCKED' THEN 1 ELSE 0 END) AS skippedCount,
+         SUM(CASE WHEN validationStatus IN ('READY','WARNING') AND (pdfKey IS NULL OR pdfKey = '') THEN 1 ELSE 0 END) AS pendingCount,
+         SUM(CASE WHEN sendStatus = 'SENT' THEN 1 ELSE 0 END) AS sentCount,
+         SUM(CASE WHEN sendStatus = 'FAILED' THEN 1 ELSE 0 END) AS sendFailedCount
        FROM tbl_letter_batch_employee WHERE batchId = ?`,
       [batchId]
     );
     const row = counts[0] || {};
     return {
       status: batch.status,
-      generated: Number(row.generated || 0),
-      skipped: Number(row.skipped || 0),
-      pending: Number(row.pending || 0),
-      sent: Number(row.sent || 0),
-      sendFailed: Number(row.sendFailed || 0),
+      generated: Number(row.generatedCount || 0),
+      skipped: Number(row.skippedCount || 0),
+      pending: Number(row.pendingCount || 0),
+      sent: Number(row.sentCount || 0),
+      sendFailed: Number(row.sendFailedCount || 0),
       failed: Number(batch.failedCount || 0),
       totalRows: Number(batch.totalRows || 0),
       aiSummary: batch.aiSummary,
