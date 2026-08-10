@@ -114,10 +114,12 @@ export function buildLetterHtml(opts: {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/>
 <style>
-  body { font-family: ${font}; font-size: 12pt; line-height: 1.5; color: #111; margin: 40px; }
-  h1,h2,h3,h4 { margin: 0 0 12px; }
-  p { margin: 0 0 10px; }
-  ul,ol { margin: 0 0 12px 20px; }
+  body { font-family: ${font}; font-size: 12pt; line-height: 1.65; color: #111; margin: 48px 56px; }
+  h1,h2,h3,h4 { margin: 0 0 18px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 16pt; text-align: center; }
+  p { margin: 0 0 12px; }
+  ul,ol { margin: 0 0 14px 22px; }
+  li { margin: 0 0 6px; }
 </style></head>
 <body>
   ${letterhead || logo}

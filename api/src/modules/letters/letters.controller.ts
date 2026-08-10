@@ -73,10 +73,27 @@ export const lettersController = {
   },
   async seedTemplates(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await templateService.ensureStarters(
-        req.orgContext!.organizationId,
-        req.user.id
-      );
+      const overwrite = Boolean(req.body?.overwrite);
+      const result = overwrite
+        ? await templateService.refreshStarters(
+            req.orgContext!.organizationId,
+            req.user.id,
+            true
+          )
+        : await templateService.ensureStarters(
+            req.orgContext!.organizationId,
+            req.user.id
+          );
+      // If library already has templates but starters are missing, fill gaps without overwrite
+      if (!overwrite && result.seeded === 0) {
+        const refreshed = await templateService.refreshStarters(
+          req.orgContext!.organizationId,
+          req.user.id,
+          false
+        );
+        res.json(refreshed);
+        return;
+      }
       res.json(result);
     } catch (e) {
       next(e);
@@ -361,8 +378,27 @@ export const lettersController = {
         throw new AppError('provider must be OUTLOOK or GMAIL', 400);
       }
       const nonce = cryptoRandom();
-      const url = mailAccountService.getAuthorizeUrl(provider, req.user.id, nonce);
+      const url = await mailAccountService.getAuthorizeUrl(provider, req.user.id, nonce);
       res.json({ url });
+    } catch (e) {
+      next(e);
+    }
+  },
+  async mailExchange(req: Request, res: Response, next: NextFunction) {
+    try {
+      const account = await mailAccountService.exchangeOAuthCode(
+        req.user.id,
+        String(req.body.code || ''),
+        String(req.body.state || '')
+      );
+      res.json({ account });
+    } catch (e) {
+      next(e);
+    }
+  },
+  async disconnectMailAccount(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json(await mailAccountService.disconnect(req.user.id, req.params.id));
     } catch (e) {
       next(e);
     }
@@ -401,6 +437,45 @@ export const lettersController = {
           req.params.batchId
         ),
       });
+    } catch (e) {
+      next(e);
+    }
+  },
+  async downloadPdfsZip(req: Request, res: Response, next: NextFunction) {
+    try {
+      await historyService.streamPdfsZip(
+        req.orgContext!.organizationId,
+        req.user.id,
+        req.params.batchId,
+        res
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+  async employeePdfUrl(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json(
+        await historyService.presignEmployeePdf(
+          req.orgContext!.organizationId,
+          req.user.id,
+          req.params.batchId,
+          req.params.employeeId
+        )
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+  async retryFailedGenerate(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json(
+        await generateService.retryFailedOnly(
+          req.orgContext!.organizationId,
+          req.user.id,
+          req.params.batchId
+        )
+      );
     } catch (e) {
       next(e);
     }

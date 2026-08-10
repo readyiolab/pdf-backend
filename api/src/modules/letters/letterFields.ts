@@ -44,6 +44,10 @@ function para(text: string) {
   };
 }
 
+function emptyPara() {
+  return { type: 'paragraph' };
+}
+
 function token(name: string) {
   return { type: 'text', marks: [{ type: 'bold' }], text: `{{${name}}}` };
 }
@@ -51,10 +55,25 @@ function token(name: string) {
 function mixedPara(...parts: Array<string | ReturnType<typeof token>>) {
   return {
     type: 'paragraph',
-    content: parts.map((p) =>
-      typeof p === 'string' ? { type: 'text', text: p } : p
-    ),
+    content: parts.map((p) => (typeof p === 'string' ? { type: 'text', text: p } : p)),
   };
+}
+
+function title(text: string) {
+  return {
+    type: 'heading',
+    attrs: { level: 2, textAlign: 'center' },
+    content: [{ type: 'text', marks: [{ type: 'bold' }], text }],
+  };
+}
+
+function closingBlock() {
+  return [
+    emptyPara(),
+    para('Warm regards,'),
+    emptyPara(),
+    mixedPara(token('Manager_Name')),
+  ];
 }
 
 /** TipTap-compatible starter documents with field tokens already inserted. */
@@ -76,130 +95,258 @@ export const STARTER_TEMPLATES: Array<{
       'New_CTC',
       'Increment_Percent',
       'Effective_Date',
+      'Manager_Name',
     ],
     contentJson: {
       type: 'doc',
       content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Salary Increment Letter' }] },
+        title('Salary Increment Letter'),
+        emptyPara(),
         mixedPara('Date: ', token('Effective_Date')),
-        mixedPara('Dear ', token('Employee_Name'), ','),
-        para(
-          'We are pleased to inform you that your compensation has been revised in recognition of your contributions.'
-        ),
+        emptyPara(),
+        para('To,'),
+        mixedPara('Mr./Ms. ', token('Employee_Name')),
         mixedPara('Employee ID: ', token('Employee_ID')),
         mixedPara('Designation: ', token('Designation')),
         mixedPara('Department: ', token('Department')),
+        emptyPara(),
+        mixedPara('Dear ', token('Employee_Name'), ','),
+        emptyPara(),
+        para(
+          'We are pleased to inform you that your performance and contributions over the past review period have been recognized. Accordingly, your compensation has been revised.'
+        ),
+        emptyPara(),
         mixedPara('Previous CTC: ', token('Old_CTC')),
         mixedPara('Revised CTC: ', token('New_CTC')),
         mixedPara('Increment: ', token('Increment_Percent'), '%'),
         mixedPara('Effective from: ', token('Effective_Date')),
-        para('Please treat this letter as confidential.'),
-        para('Warm regards,'),
+        emptyPara(),
+        para(
+          'We appreciate your dedication and look forward to your continued contributions to the team. Please treat this communication as confidential.'
+        ),
+        ...closingBlock(),
       ],
     },
   },
   {
     type: 'PROMOTION',
     name: 'Promotion Letter',
-    fieldTokens: ['Employee_Name', 'Employee_ID', 'Designation', 'Department', 'Effective_Date', 'Manager_Name'],
+    fieldTokens: [
+      'Employee_Name',
+      'Employee_ID',
+      'Designation',
+      'Department',
+      'Effective_Date',
+      'Manager_Name',
+      'New_CTC',
+    ],
     contentJson: {
       type: 'doc',
       content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Promotion Letter' }] },
+        title('Promotion Letter'),
+        emptyPara(),
+        mixedPara('Date: ', token('Effective_Date')),
+        emptyPara(),
         mixedPara('Dear ', token('Employee_Name'), ','),
-        para('Congratulations! We are delighted to promote you in recognition of your performance.'),
-        mixedPara('New Designation: ', token('Designation')),
+        emptyPara(),
+        para(
+          'Congratulations. In recognition of your performance, leadership, and commitment, we are pleased to confirm your promotion.'
+        ),
+        emptyPara(),
+        mixedPara('Employee ID: ', token('Employee_ID')),
+        mixedPara('New designation: ', token('Designation')),
         mixedPara('Department: ', token('Department')),
-        mixedPara('Effective Date: ', token('Effective_Date')),
-        mixedPara('Reporting Manager: ', token('Manager_Name')),
-        para('We look forward to your continued success.'),
+        mixedPara('Effective date: ', token('Effective_Date')),
+        mixedPara('Reporting manager: ', token('Manager_Name')),
+        emptyPara(),
+        para(
+          'We are confident you will continue to set a high standard in your new role. Please reach out to Human Resources if you have any questions.'
+        ),
+        ...closingBlock(),
       ],
     },
   },
   {
     type: 'SALARY_REVISION',
     name: 'Salary Revision Letter',
-    fieldTokens: ['Employee_Name', 'Employee_ID', 'Old_CTC', 'New_CTC', 'Effective_Date'],
+    fieldTokens: [
+      'Employee_Name',
+      'Employee_ID',
+      'Old_CTC',
+      'New_CTC',
+      'Effective_Date',
+      'Manager_Name',
+    ],
     contentJson: {
       type: 'doc',
       content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Salary Revision' }] },
+        title('Salary Revision Letter'),
+        emptyPara(),
+        mixedPara('Date: ', token('Effective_Date')),
+        emptyPara(),
         mixedPara('Dear ', token('Employee_Name'), ','),
-        para('This letter confirms a revision to your compensation structure.'),
+        emptyPara(),
+        para(
+          'This letter confirms a revision to your compensation structure as part of our periodic review process.'
+        ),
+        emptyPara(),
+        mixedPara('Employee ID: ', token('Employee_ID')),
         mixedPara('Previous CTC: ', token('Old_CTC')),
         mixedPara('Revised CTC: ', token('New_CTC')),
-        mixedPara('Effective Date: ', token('Effective_Date')),
+        mixedPara('Effective date: ', token('Effective_Date')),
+        emptyPara(),
+        para(
+          'All other terms and conditions of your employment remain unchanged. Please contact HR for any clarifications.'
+        ),
+        ...closingBlock(),
       ],
     },
   },
   {
     type: 'OFFER',
     name: 'Offer Letter',
-    fieldTokens: ['Employee_Name', 'Employee_Email', 'Designation', 'Department', 'New_CTC', 'Effective_Date'],
+    fieldTokens: [
+      'Employee_Name',
+      'Employee_Email',
+      'Designation',
+      'Department',
+      'New_CTC',
+      'Effective_Date',
+      'Manager_Name',
+    ],
     contentJson: {
       type: 'doc',
       content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Offer of Employment' }] },
+        title('Offer of Employment'),
+        emptyPara(),
+        mixedPara('Date: ', token('Effective_Date')),
+        emptyPara(),
         mixedPara('Dear ', token('Employee_Name'), ','),
-        para('We are pleased to offer you employment with our organization.'),
+        emptyPara(),
+        para(
+          'We are delighted to offer you employment with our organization. We believe your skills and experience will be a valuable addition to our team.'
+        ),
+        emptyPara(),
         mixedPara('Position: ', token('Designation')),
         mixedPara('Department: ', token('Department')),
-        mixedPara('CTC: ', token('New_CTC')),
-        mixedPara('Start Date: ', token('Effective_Date')),
-        para('Please confirm acceptance by replying to this letter.'),
+        mixedPara('Annual CTC: ', token('New_CTC')),
+        mixedPara('Proposed start date: ', token('Effective_Date')),
+        mixedPara('Email on file: ', token('Employee_Email')),
+        emptyPara(),
+        para(
+          'This offer is contingent upon completion of our standard joining formalities. Please confirm your acceptance by replying to this letter.'
+        ),
+        ...closingBlock(),
       ],
     },
   },
   {
     type: 'CONFIRMATION',
     name: 'Confirmation Letter',
-    fieldTokens: ['Employee_Name', 'Employee_ID', 'Designation', 'Effective_Date'],
+    fieldTokens: [
+      'Employee_Name',
+      'Employee_ID',
+      'Designation',
+      'Effective_Date',
+      'Manager_Name',
+    ],
     contentJson: {
       type: 'doc',
       content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Confirmation of Employment' }] },
+        title('Confirmation of Employment'),
+        emptyPara(),
+        mixedPara('Date: ', token('Effective_Date')),
+        emptyPara(),
         mixedPara('Dear ', token('Employee_Name'), ','),
-        para('We are pleased to confirm your employment following successful completion of probation.'),
+        emptyPara(),
+        para(
+          'We are pleased to confirm your employment following the successful completion of your probationary period.'
+        ),
+        emptyPara(),
+        mixedPara('Employee ID: ', token('Employee_ID')),
         mixedPara('Designation: ', token('Designation')),
-        mixedPara('Confirmation Date: ', token('Effective_Date')),
+        mixedPara('Confirmation date: ', token('Effective_Date')),
+        emptyPara(),
+        para(
+          'We look forward to your continued association with the organization and wish you every success ahead.'
+        ),
+        ...closingBlock(),
       ],
     },
   },
   {
     type: 'WARNING',
     name: 'Warning Letter',
-    fieldTokens: ['Employee_Name', 'Employee_ID', 'Designation', 'Effective_Date'],
+    fieldTokens: [
+      'Employee_Name',
+      'Employee_ID',
+      'Designation',
+      'Effective_Date',
+      'Manager_Name',
+    ],
     contentJson: {
       type: 'doc',
       content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Warning Letter' }] },
-        mixedPara('Dear ', token('Employee_Name'), ','),
-        para(
-          'This letter serves as a formal warning regarding conduct/performance that does not meet organizational standards.'
-        ),
-        mixedPara('Employee ID: ', token('Employee_ID')),
+        title('Warning Letter'),
+        emptyPara(),
         mixedPara('Date: ', token('Effective_Date')),
-        para('Please take corrective action immediately. Further instances may lead to disciplinary measures.'),
+        emptyPara(),
+        mixedPara('Dear ', token('Employee_Name'), ','),
+        emptyPara(),
+        para(
+          'This letter serves as a formal warning regarding conduct or performance that does not meet the standards expected by the organization.'
+        ),
+        emptyPara(),
+        mixedPara('Employee ID: ', token('Employee_ID')),
+        mixedPara('Designation: ', token('Designation')),
+        emptyPara(),
+        para(
+          'You are advised to take immediate corrective action. Further instances may result in additional disciplinary measures, up to and including termination, in accordance with company policy.'
+        ),
+        emptyPara(),
+        para('Please acknowledge receipt of this letter.'),
+        ...closingBlock(),
       ],
     },
   },
   {
     type: 'SEPARATION',
     name: 'Separation Letter',
-    fieldTokens: ['Employee_Name', 'Employee_ID', 'Designation', 'Effective_Date'],
+    fieldTokens: [
+      'Employee_Name',
+      'Employee_ID',
+      'Designation',
+      'Effective_Date',
+      'Manager_Name',
+    ],
     contentJson: {
       type: 'doc',
       content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Separation Letter' }] },
+        title('Separation Letter'),
+        emptyPara(),
+        mixedPara('Date: ', token('Effective_Date')),
+        emptyPara(),
         mixedPara('Dear ', token('Employee_Name'), ','),
-        para('This letter confirms the separation of your employment with the organization.'),
-        mixedPara('Last Working Day: ', token('Effective_Date')),
+        emptyPara(),
+        para(
+          'This letter confirms the separation of your employment with the organization. We thank you for your service and contributions during your tenure.'
+        ),
+        emptyPara(),
+        mixedPara('Employee ID: ', token('Employee_ID')),
         mixedPara('Designation: ', token('Designation')),
-        para('We thank you for your service and wish you the best.'),
+        mixedPara('Last working day: ', token('Effective_Date')),
+        emptyPara(),
+        para(
+          'Human Resources will share details regarding final settlement, return of company property, and other exit formalities separately. We wish you the very best in your future endeavors.'
+        ),
+        ...closingBlock(),
       ],
     },
   },
 ];
+
+/** Canonical starter names — used when refreshing system templates. */
+export const STARTER_TEMPLATE_NAMES = STARTER_TEMPLATES.map((s) => s.name);
 
 export function extractFieldTokens(contentJson: unknown): string[] {
   const text = JSON.stringify(contentJson ?? {});

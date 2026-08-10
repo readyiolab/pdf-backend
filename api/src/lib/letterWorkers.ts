@@ -126,14 +126,13 @@ async function resolveChromeExecutable(): Promise<string | undefined> {
   return undefined;
 }
 
-async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<void> {
-  // Dynamic import so API still boots if puppeteer isn't installed yet
+async function launchChromeBrowser() {
   const puppeteer = await import('puppeteer');
   const executablePath = await resolveChromeExecutable();
 
   logger.info(
-    { executablePath: executablePath || '(puppeteer-default)' },
-    'Launching Chrome for letter PDF'
+    { executablePath: executablePath || '(none)' },
+    'Launching Chrome for letter PDF chunk'
   );
 
   if (!executablePath) {
@@ -142,7 +141,7 @@ async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<vo
     );
   }
 
-  const browser = await withTimeout(
+  return withTimeout(
     puppeteer.launch({
       headless: true,
       executablePath,
@@ -152,8 +151,6 @@ async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<vo
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-software-rasterizer',
-        '--single-process',
-        '--no-zygote',
         '--font-render-hinting=none',
       ],
       timeout: 30_000,
@@ -161,9 +158,11 @@ async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<vo
     45_000,
     'Chrome launch'
   );
+}
 
+async function renderPdfWithBrowser(browser: any, html: string, outPath: string): Promise<void> {
+  const page = await browser.newPage();
   try {
-    const page = await browser.newPage();
     // domcontentloaded — don't wait on remote logo/letterhead images (they hang headless Chrome)
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await withTimeout(
@@ -177,7 +176,7 @@ async function renderPdfWithPuppeteer(html: string, outPath: string): Promise<vo
       'page.pdf'
     );
   } finally {
-    await browser.close().catch(() => undefined);
+    await page.close().catch(() => undefined);
   }
 }
 
@@ -237,133 +236,165 @@ async function processGenerateChunk(job: Job<LetterGenerateJob>) {
 
   let generated = 0;
   let failed = 0;
+  let browser: any = null;
 
-  for (const employeeId of employeeIds) {
-    const emp = await db.select('tbl_letter_batch_employee', '*', 'id = ? AND batchId = ?', [
-      employeeId,
-      batchId,
-    ]);
-    if (!emp) continue;
-    if (!['READY', 'WARNING'].includes(emp.validationStatus)) continue;
+  try {
+    browser = await launchChromeBrowser();
 
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'letter-'));
-    const plainPath = path.join(tmpDir, 'plain.pdf');
-    const finalPath = path.join(tmpDir, 'final.pdf');
+    for (const employeeId of employeeIds) {
+      const emp = await db.select('tbl_letter_batch_employee', '*', 'id = ? AND batchId = ?', [
+        employeeId,
+        batchId,
+      ]);
+      if (!emp) continue;
+      if (!['READY', 'WARNING'].includes(emp.validationStatus)) continue;
 
-    try {
-      const data = parseJson<Record<string, string>>(emp.employeeDataJson, {});
-      const html = buildLetterHtml({
-        contentJson,
-        employeeData: data,
-        brand: brand
-          ? {
-              footerText: brand.footerText,
-              signatoryName: brand.signatoryName,
-              signatoryDesignation: brand.signatoryDesignation,
-              defaultFont: brand.defaultFont,
-              logoUrl,
-              letterheadUrl,
-            }
-          : undefined,
-      });
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'letter-'));
+      const plainPath = path.join(tmpDir, 'plain.pdf');
+      const finalPath = path.join(tmpDir, 'final.pdf');
 
-      await renderPdfWithPuppeteer(html, plainPath);
+      try {
+        const data = parseJson<Record<string, string>>(emp.employeeDataJson, {});
+        const html = buildLetterHtml({
+          contentJson,
+          employeeData: data,
+          brand: brand
+            ? {
+                footerText: brand.footerText,
+                signatoryName: brand.signatoryName,
+                signatoryDesignation: brand.signatoryDesignation,
+                defaultFont: brand.defaultFont,
+                logoUrl,
+                letterheadUrl,
+              }
+            : undefined,
+        });
 
-      let uploadPath = plainPath;
-      if (emp.encryptedPdfPassword) {
+        await renderPdfWithBrowser(browser, html, plainPath);
+
+        let uploadPath = plainPath;
+        if (emp.encryptedPdfPassword) {
+          try {
+            const password = decryptSecret(emp.encryptedPdfPassword);
+            await encryptPdfWithQpdf(plainPath, finalPath, password);
+            uploadPath = finalPath;
+          } catch (err) {
+            logger.error(
+              { employeeId, err: (err as Error).message },
+              'Letter PDF password protect failed; uploading unprotected'
+            );
+          }
+        }
+
+        const fileName = safePdfFileName(
+          data.Employee_ID || 'unknown',
+          data.Employee_Name || 'employee',
+          templateType
+        );
+        const pdfKey = `${keyPrefix}/letters/${batchId}/${fileName}`;
+        const bytes = await fs.readFile(uploadPath);
+
+        if (typeof (storage as any).putObject === 'function') {
+          await (storage as any).putObject(pdfKey, bytes, 'application/pdf');
+        } else if (typeof (storage as any).upload === 'function') {
+          await (storage as any).upload(pdfKey, bytes, 'application/pdf');
+        } else {
+          const putUrl = await storage.presignPut(
+            pdfKey,
+            'application/pdf',
+            env.PRESIGN_TTL_SECONDS
+          );
+          const resp = await fetch(putUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/pdf' },
+            body: bytes,
+          });
+          if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
+        }
+
+        await db.update(
+          'tbl_letter_batch_employee',
+          { pdfKey, pdfFileName: fileName, sendStatus: 'PENDING' },
+          'id = ?',
+          [employeeId]
+        );
+        generated += 1;
+      } catch (err) {
+        failed += 1;
+        const message = ((err as Error).message || 'PDF generation failed').slice(0, 500);
+        logger.error({ employeeId, batchId, err: message }, 'Letter PDF generation failed');
         try {
-          const password = decryptSecret(emp.encryptedPdfPassword);
-          await encryptPdfWithQpdf(plainPath, finalPath, password);
-          uploadPath = finalPath;
-        } catch (err) {
+          const prevFlags = parseJson<Array<{ code: string; message: string }>>(
+            emp.anomalyFlagsJson,
+            []
+          ).filter((f) => f.code !== 'GENERATION_FAILED');
+          await db.update(
+            'tbl_letter_batch_employee',
+            {
+              sendStatus: 'FAILED',
+              anomalyFlagsJson: JSON.stringify([
+                ...prevFlags,
+                { code: 'GENERATION_FAILED', message },
+              ]),
+            },
+            'id = ?',
+            [employeeId]
+          );
+        } catch (markErr) {
           logger.error(
-            { employeeId, err: (err as Error).message },
-            'Letter PDF password protect failed; uploading unprotected'
+            { employeeId, err: (markErr as Error).message },
+            'Failed to mark employee generation error'
           );
         }
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
       }
-
-      const fileName = safePdfFileName(
-        data.Employee_ID || 'unknown',
-        data.Employee_Name || 'employee',
-        templateType
-      );
-      const pdfKey = `${keyPrefix}/letters/${batchId}/${fileName}`;
-      const bytes = await fs.readFile(uploadPath);
-
-      if (typeof (storage as any).putObject === 'function') {
-        await (storage as any).putObject(pdfKey, bytes, 'application/pdf');
-      } else if (typeof (storage as any).upload === 'function') {
-        await (storage as any).upload(pdfKey, bytes, 'application/pdf');
-      } else {
-        const putUrl = await storage.presignPut(pdfKey, 'application/pdf', env.PRESIGN_TTL_SECONDS);
-        const resp = await fetch(putUrl, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/pdf' },
-          body: bytes,
-        });
-        if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
-      }
-
-      await db.update(
-        'tbl_letter_batch_employee',
-        { pdfKey, pdfFileName: fileName },
-        'id = ?',
-        [employeeId]
-      );
-      generated += 1;
-    } catch (err) {
+    }
+  } catch (chunkErr) {
+    // Browser launch failed — mark every employee in this chunk as failed
+    const message = ((chunkErr as Error).message || 'PDF generation failed').slice(0, 500);
+    logger.error({ batchId, err: message }, 'Letter generate chunk aborted');
+    for (const employeeId of employeeIds) {
       failed += 1;
-      const message = ((err as Error).message || 'PDF generation failed').slice(0, 500);
-      logger.error({ employeeId, batchId, err: message }, 'Letter PDF generation failed');
-      // Mark row so it leaves the "pending" bucket and the batch can finish
       try {
-        const prevFlags = parseJson<Array<{ code: string; message: string }>>(
-          emp.anomalyFlagsJson,
-          []
-        ).filter((f) => f.code !== 'GENERATION_FAILED');
         await db.update(
           'tbl_letter_batch_employee',
           {
             sendStatus: 'FAILED',
-            anomalyFlagsJson: JSON.stringify([
-              ...prevFlags,
-              { code: 'GENERATION_FAILED', message },
-            ]),
+            anomalyFlagsJson: JSON.stringify([{ code: 'GENERATION_FAILED', message }]),
           },
-          'id = ?',
-          [employeeId]
+          'id = ? AND batchId = ? AND (pdfKey IS NULL OR pdfKey = \'\')',
+          [employeeId, batchId]
         );
-      } catch (markErr) {
-        logger.error(
-          { employeeId, err: (markErr as Error).message },
-          'Failed to mark employee generation error'
-        );
+      } catch {
+        /* ignore */
       }
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  } finally {
+    await browser?.close().catch(() => undefined);
   }
 
-  // Update batch counters — exclude FAILED rows from pending so the batch can complete
   const counts = await db.queryAll<any>(
     `SELECT
        SUM(CASE WHEN pdfKey IS NOT NULL AND pdfKey <> '' THEN 1 ELSE 0 END) AS generatedCount,
        SUM(CASE WHEN validationStatus IN ('READY','WARNING')
                  AND (pdfKey IS NULL OR pdfKey = '')
-                 AND IFNULL(sendStatus, 'PENDING') <> 'FAILED' THEN 1 ELSE 0 END) AS pendingCount
+                 AND IFNULL(sendStatus, 'PENDING') <> 'FAILED' THEN 1 ELSE 0 END) AS pendingCount,
+       SUM(CASE WHEN validationStatus IN ('READY','WARNING')
+                 AND (pdfKey IS NULL OR pdfKey = '')
+                 AND sendStatus = 'FAILED' THEN 1 ELSE 0 END) AS failedCount
      FROM tbl_letter_batch_employee WHERE batchId = ?`,
     [batchId]
   );
   const generatedCount = Number(counts[0]?.generatedCount || 0);
   const pending = Number(counts[0]?.pendingCount || 0);
-  const prevFailed = Number(batch.failedCount || 0);
+  const failedCount = Number(counts[0]?.failedCount || 0);
 
   await db.update(
     'tbl_letter_batch',
     {
       generatedCount,
-      failedCount: prevFailed + failed,
+      failedCount,
       status: pending === 0 ? 'GENERATED' : 'GENERATING',
       generatedAt: pending === 0 ? new Date() : batch.generatedAt,
     },
@@ -371,7 +402,7 @@ async function processGenerateChunk(job: Job<LetterGenerateJob>) {
     [batchId]
   );
 
-  logger.info({ batchId, generated, failed, pending }, 'Letter generate chunk complete');
+  logger.info({ batchId, generated, failed, pending, failedCount }, 'Letter generate chunk complete');
 }
 
 async function processSendChunk(job: Job<LetterSendJob>) {
@@ -387,8 +418,21 @@ async function processSendChunk(job: Job<LetterSendJob>) {
     return;
   }
 
-  const { decryptJson } = await import('./secretBox.js');
-  const tokens = decryptJson(account.encryptedTokens) as Record<string, any>;
+  const { mailAccountService } = await import('../modules/letters/send.service.js');
+  let accessToken: string;
+  try {
+    accessToken = await mailAccountService.getValidAccessToken({
+      id: String(account.id),
+      provider: String(account.provider),
+      encryptedTokens: String(account.encryptedTokens),
+    });
+  } catch (err) {
+    logger.error(
+      { mailAccountId, err: (err as Error).message },
+      'Mail account token unavailable'
+    );
+    return;
+  }
   const { storage } = await getStorageForUser(userId);
 
   let sent = 0;
@@ -408,13 +452,10 @@ async function processSendChunk(job: Job<LetterSendJob>) {
     }
 
     try {
-      // Download PDF bytes
-      const url = await storage.presignGet(emp.pdfKey, { ttlSeconds: 300 });
-      const pdfResp = await fetch(url);
-      if (!pdfResp.ok) throw new Error('Failed to download PDF for email');
-      const pdfBytes = Buffer.from(await pdfResp.arrayBuffer());
+      const pdfBytes = await storage.getObjectBytes(emp.pdfKey);
       const pdfBase64 = pdfBytes.toString('base64');
       const fileName = emp.pdfFileName || 'letter.pdf';
+      const tokens = { access_token: accessToken };
 
       if (account.provider === 'OUTLOOK') {
         await sendViaGraph(tokens, {
@@ -604,7 +645,7 @@ export function startLetterWorkers() {
   generateWorker = new Worker<LetterGenerateJob>(
     LETTER_GENERATE_QUEUE,
     async (job) => processGenerateChunk(job),
-    { connection: redis as any, concurrency: 1 }
+    { connection: redis as any, concurrency: 2 }
   );
   sendWorker = new Worker<LetterSendJob>(
     LETTER_SEND_QUEUE,

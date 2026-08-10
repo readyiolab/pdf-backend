@@ -3,7 +3,7 @@ import { db } from '../../lib/mysql';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { writeLetterAudit } from '../orgs/orgs.service';
 import { orgScope } from './orgScope';
-import { STARTER_TEMPLATES, extractFieldTokens, type LetterType } from './letterFields';
+import { STARTER_TEMPLATES, STARTER_TEMPLATE_NAMES, extractFieldTokens, type LetterType } from './letterFields';
 
 function newId() {
   return crypto.randomUUID();
@@ -199,7 +199,7 @@ export const templateService = {
   async ensureStarters(organizationId: string, userId: string) {
     const count = await orgScope.count(organizationId, 'tbl_letter_template');
     if (count > 0) {
-      return { seeded: 0, templates: await this.list(organizationId) };
+      return { seeded: 0, templates: await this.list(organizationId), refreshed: 0 };
     }
 
     let seeded = 0;
@@ -212,7 +212,50 @@ export const templateService = {
       });
       seeded += 1;
     }
-    return { seeded, templates: await this.list(organizationId) };
+    return { seeded, templates: await this.list(organizationId), refreshed: 0 };
+  },
+
+  /**
+   * Upsert professional starter templates by canonical name.
+   * Creates missing starters; overwrites existing system-named starters when overwrite=true.
+   */
+  async refreshStarters(organizationId: string, userId: string, overwrite = false) {
+    const existing = await this.list(organizationId);
+    const byName = new Map(existing.map((t: any) => [String(t.name), t]));
+    let seeded = 0;
+    let refreshed = 0;
+
+    for (const starter of STARTER_TEMPLATES) {
+      const row = byName.get(starter.name);
+      if (!row) {
+        await this.create(organizationId, userId, {
+          name: starter.name,
+          type: starter.type,
+          contentJson: starter.contentJson,
+          fieldTokens: starter.fieldTokens,
+        });
+        seeded += 1;
+        continue;
+      }
+      if (overwrite && STARTER_TEMPLATE_NAMES.includes(starter.name)) {
+        await this.update(organizationId, userId, row.id, {
+          contentJson: starter.contentJson,
+          bumpVersion: true,
+        });
+        refreshed += 1;
+      }
+    }
+
+    await writeLetterAudit(
+      organizationId,
+      userId,
+      'TEMPLATES_STARTERS_REFRESHED',
+      'letter_template',
+      null,
+      { seeded, refreshed, overwrite }
+    );
+
+    return { seeded, refreshed, templates: await this.list(organizationId) };
   },
 };
 

@@ -15,6 +15,7 @@ import {
   templateUpdateSchema,
   approveGenerateSchema,
   sendBatchSchema,
+  mailExchangeSchema,
 } from './letters.types';
 import { LETTER_TYPES } from './letterFields';
 
@@ -79,16 +80,29 @@ router.post(
 );
 router.get('/batches/:batchId/progress', member, lettersController.generateProgress);
 router.post(
+  '/batches/:batchId/generate/retry-failed',
+  editor,
+  lettersController.retryFailedGenerate
+);
+router.post(
   '/batches/:batchId/send',
   editor,
   validate(sendBatchSchema),
   lettersController.startSend
 );
 router.get('/batches/:batchId/report', member, lettersController.report);
+router.get('/batches/:batchId/pdfs/zip', member, lettersController.downloadPdfsZip);
+router.get(
+  '/batches/:batchId/employees/:employeeId/pdf',
+  member,
+  lettersController.employeePdfUrl
+);
 
 // Mail accounts (user-scoped, not org-scoped role beyond auth)
 router.get('/mail/accounts', lettersController.listMailAccounts);
 router.get('/mail/authorize', lettersController.mailAuthorize);
+router.post('/mail/exchange', validate(mailExchangeSchema), lettersController.mailExchange);
+router.delete('/mail/accounts/:id', lettersController.disconnectMailAccount);
 
 // Audit
 router.get('/audit', member, lettersController.audit);

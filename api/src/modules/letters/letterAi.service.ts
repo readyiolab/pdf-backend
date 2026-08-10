@@ -133,6 +133,88 @@ function fallbackDraftDoc(instruction: string): any {
   };
 }
 
+/** Walk TipTap doc → plain letter text (for AI polish input / preview). */
+export function tipTapDocToPlainText(doc: any): string {
+  if (!doc) return '';
+  if (typeof doc === 'string') {
+    try {
+      return tipTapDocToPlainText(JSON.parse(doc));
+    } catch {
+      return doc;
+    }
+  }
+  const lines: string[] = [];
+  const walk = (node: any) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (node.type === 'text') {
+      return;
+    }
+    if (node.type === 'paragraph' || node.type === 'heading' || node.type === 'listItem') {
+      const text = collectText(node).trim();
+      if (text) lines.push(text);
+      return;
+    }
+    if (node.content) walk(node.content);
+  };
+  walk(doc.content || doc);
+  return lines.join('\n\n');
+}
+
+function collectText(node: any): string {
+  if (!node) return '';
+  if (node.type === 'text') return String(node.text || '');
+  if (node.type === 'hardBreak') return '\n';
+  if (Array.isArray(node)) return node.map(collectText).join('');
+  if (node.content) return node.content.map(collectText).join('');
+  return '';
+}
+
+/** Split plain letter text into TipTap paragraphs; bold {{tokens}}. */
+export function plainTextToTipTapDoc(text: string): any {
+  const lines = String(text || '')
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    return { type: 'doc', content: [{ type: 'paragraph' }] };
+  }
+  return {
+    type: 'doc',
+    content: lines.map((line, i) => {
+      if (i === 0 && line.length < 80 && !line.includes('{{')) {
+        return {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: line }],
+        };
+      }
+      return { type: 'paragraph', content: tokenizeLine(line) };
+    }),
+  };
+}
+
+function tokenizeLine(line: string): any[] {
+  const parts: any[] = [];
+  const re = /(\{\{[A-Za-z0-9_]+\}\})/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line))) {
+    if (m.index > last) {
+      parts.push({ type: 'text', text: line.slice(last, m.index) });
+    }
+    parts.push({ type: 'text', marks: [{ type: 'bold' }], text: m[1] });
+    last = m.index + m[1].length;
+  }
+  if (last < line.length) {
+    parts.push({ type: 'text', text: line.slice(last) });
+  }
+  return parts.length ? parts : [{ type: 'text', text: line }];
+}
+
 /** Plain TypeScript draft → validate → refine loop (no LangGraph). */
 export async function draftValidateRefine(opts: {
   instruction: string;
@@ -327,6 +409,20 @@ export const letterAiService = {
     const provider = getAiProvider();
     if (!provider.isConfigured()) throw new AppError('AI is not configured', 503);
 
+    // Never accept raw TipTap JSON as "text" — strip if a client sent it by mistake
+    let letterText = String(input.text || '').trim();
+    if (letterText.startsWith('{') && letterText.includes('"type"')) {
+      try {
+        const parsed = JSON.parse(letterText);
+        letterText = tipTapDocToPlainText(parsed);
+      } catch {
+        /* keep as-is */
+      }
+    }
+    if (!letterText) {
+      throw new AppError('Nothing to improve — add letter content first.', 400);
+    }
+
     const modePrompt =
       input.mode === 'formal'
         ? 'Rewrite more formally for HR correspondence.'
@@ -334,13 +430,33 @@ export const letterAiService = {
           ? 'Rewrite more concisely without losing meaning.'
           : 'Rewrite and append a short appropriate legal disclaimer suitable for an employment letter.';
 
+    const allowed = [...SYSTEM_FIELDS];
+    const system = `${modePrompt}
+Return ONLY valid TipTap JSON shaped as {"type":"doc","content":[...]} using paragraph/heading/text nodes.
+Preserve every {{Token}} placeholder exactly (from: ${allowed.join(', ')}). Never invent other tokens.
+Do not wrap the whole letter in one paragraph — use separate paragraphs for title, date, greeting, body, and closing.
+No markdown fences, no commentary.`;
+
     const res = await provider.complete(
       [
-        { role: 'system', content: `${modePrompt} Return only the rewritten paragraph text.` },
-        { role: 'user', content: input.text },
+        { role: 'system', content: system },
+        { role: 'user', content: letterText.slice(0, 6000) },
       ],
-      { maxTokens: 800 }
+      { maxTokens: 2000 }
     );
+
+    let contentJson: any;
+    try {
+      contentJson = parseModelJson(res.text);
+    } catch {
+      contentJson = plainTextToTipTapDoc(letterText);
+    }
+    if (!contentJson || contentJson.type !== 'doc' || !Array.isArray(contentJson.content)) {
+      contentJson = plainTextToTipTapDoc(letterText);
+    }
+    const repaired = repairTokens(contentJson, allowed);
+    contentJson = repaired.content;
+    const suggestionPreview = tipTapDocToPlainText(contentJson);
 
     await writeLetterAudit(
       organizationId,
@@ -353,8 +469,10 @@ export const letterAiService = {
     );
 
     return {
-      original: input.text,
-      suggestion: res.text,
+      original: letterText,
+      suggestion: suggestionPreview,
+      suggestionPreview,
+      contentJson,
       mode: input.mode,
       model: env.AI_MODEL,
     };

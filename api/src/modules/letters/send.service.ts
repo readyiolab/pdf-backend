@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { db } from '../../lib/mysql';
+import { redis } from '../../lib/redis';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { encryptJson, decryptJson, isSecretBoxConfigured } from '../../lib/secretBox';
 import { env } from '../../config/env';
@@ -8,10 +9,29 @@ import { writeLetterAudit } from '../orgs/orgs.service';
 import { batchService } from './batch.service';
 import { enqueueLetterSend } from '../../lib/letterQueues';
 import { orgScope } from './orgScope';
+import { logger } from '../../lib/logger';
 
 function newId() {
   return crypto.randomUUID();
 }
+
+function oauthRedirectUri() {
+  return `${String(env.APP_URL || '').replace(/\/$/, '')}/letters/mail/callback`;
+}
+
+const OAUTH_STATE_TTL_SEC = 600;
+
+type MailProvider = 'OUTLOOK' | 'GMAIL';
+
+type OAuthTokens = {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  expires_at?: number;
+  token_type?: string;
+  scope?: string;
+  [key: string]: unknown;
+};
 
 export const mailAccountService = {
   async list(userId: string) {
@@ -26,10 +46,21 @@ export const mailAccountService = {
   },
 
   /** Build OAuth authorize URL for Microsoft or Google. */
-  getAuthorizeUrl(provider: 'OUTLOOK' | 'GMAIL', userId: string, stateNonce: string): string {
-    const redirectUri = `${env.APP_URL}/letters/mail/callback`;
+  async getAuthorizeUrl(
+    provider: MailProvider,
+    userId: string,
+    stateNonce: string
+  ): Promise<string> {
+    const redirectUri = oauthRedirectUri();
     const state = Buffer.from(JSON.stringify({ userId, provider, nonce: stateNonce })).toString(
       'base64url'
+    );
+
+    await redis.set(
+      `letter-mail-oauth:${userId}:${stateNonce}`,
+      provider,
+      'EX',
+      OAUTH_STATE_TTL_SEC
     );
 
     if (provider === 'OUTLOOK') {
@@ -43,13 +74,50 @@ export const mailAccountService = {
 
     const clientId = env.GOOGLE_CLIENT_ID || '';
     if (!clientId) throw new AppError('GOOGLE_CLIENT_ID is not configured', 503);
-    const scopes = encodeURIComponent('https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email');
+    const scopes = encodeURIComponent(
+      'https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email'
+    );
     return `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&access_type=offline&prompt=consent&state=${state}`;
+  },
+
+  async exchangeOAuthCode(userId: string, code: string, stateRaw: string) {
+    let state: { userId?: string; provider?: string; nonce?: string };
+    try {
+      state = JSON.parse(Buffer.from(stateRaw, 'base64url').toString('utf8'));
+    } catch {
+      throw new AppError('Invalid OAuth state', 400);
+    }
+
+    if (state.userId !== userId || !state.nonce) {
+      throw new AppError('OAuth state does not match the signed-in user', 403);
+    }
+    const provider = String(state.provider || '').toUpperCase() as MailProvider;
+    if (provider !== 'OUTLOOK' && provider !== 'GMAIL') {
+      throw new AppError('Unsupported mail provider', 400);
+    }
+
+    const stateKey = `letter-mail-oauth:${userId}:${state.nonce}`;
+    const stored = await redis.get(stateKey);
+    if (!stored || stored !== provider) {
+      throw new AppError('OAuth session expired. Please connect again.', 400);
+    }
+    await redis.del(stateKey);
+
+    const tokens =
+      provider === 'OUTLOOK'
+        ? await exchangeMicrosoftCode(code)
+        : await exchangeGoogleCode(code);
+    const emailAddress =
+      provider === 'OUTLOOK'
+        ? await fetchMicrosoftEmail(tokens.access_token)
+        : await fetchGoogleEmail(tokens.access_token);
+
+    return this.upsertFromOAuth(userId, provider, tokens, emailAddress);
   },
 
   async upsertFromOAuth(
     userId: string,
-    provider: 'OUTLOOK' | 'GMAIL',
+    provider: MailProvider,
     tokens: Record<string, unknown>,
     emailAddress: string
   ) {
@@ -62,7 +130,7 @@ export const mailAccountService = {
       'userId = ? AND provider = ?',
       [userId, provider]
     );
-    const encryptedTokens = encryptJson(tokens);
+    const encryptedTokens = encryptJson(withExpiry(tokens as OAuthTokens));
     if (existing) {
       await db.update(
         'tbl_user_mail_account',
@@ -95,9 +163,168 @@ export const mailAccountService = {
   },
 
   getDecryptedTokens(account: { encryptedTokens: string }) {
-    return decryptJson<Record<string, unknown>>(account.encryptedTokens);
+    return decryptJson<OAuthTokens>(account.encryptedTokens);
+  },
+
+  /**
+   * Refresh access token when near expiry; persist updated tokens.
+   * Returns a usable access_token.
+   */
+  async getValidAccessToken(account: {
+    id: string;
+    provider: string;
+    encryptedTokens: string;
+  }): Promise<string> {
+    let tokens = this.getDecryptedTokens(account);
+    const expiresAt = Number(tokens.expires_at || 0);
+    const stillValid = expiresAt > Date.now() + 60_000;
+    if (stillValid && tokens.access_token) {
+      return String(tokens.access_token);
+    }
+
+    if (!tokens.refresh_token) {
+      if (tokens.access_token) return String(tokens.access_token);
+      throw new Error('Mail account tokens expired. Reconnect Outlook or Gmail.');
+    }
+
+    try {
+      tokens =
+        account.provider === 'OUTLOOK'
+          ? await refreshMicrosoftToken(String(tokens.refresh_token))
+          : await refreshGoogleToken(String(tokens.refresh_token), tokens);
+      const encryptedTokens = encryptJson(withExpiry(tokens));
+      await db.update('tbl_user_mail_account', { encryptedTokens }, 'id = ?', [account.id]);
+      return String(tokens.access_token);
+    } catch (err) {
+      logger.warn(
+        { accountId: account.id, err: (err as Error).message },
+        'Mail token refresh failed'
+      );
+      throw new Error('Mail account tokens expired. Reconnect Outlook or Gmail.');
+    }
   },
 };
+
+function withExpiry(tokens: OAuthTokens): OAuthTokens {
+  const expiresIn = Number(tokens.expires_in || 3600);
+  return {
+    ...tokens,
+    expires_at: Date.now() + expiresIn * 1000,
+  };
+}
+
+async function exchangeMicrosoftCode(code: string): Promise<OAuthTokens> {
+  const clientId = env.MICROSOFT_CLIENT_ID || '';
+  const clientSecret = env.MICROSOFT_CLIENT_SECRET || '';
+  if (!clientId || !clientSecret) {
+    throw new AppError('Microsoft OAuth is not configured on the server', 503);
+  }
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    redirect_uri: oauthRedirectUri(),
+    grant_type: 'authorization_code',
+  });
+  const resp = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!resp.ok) {
+    throw new AppError(`Microsoft token exchange failed: ${await resp.text()}`, 400);
+  }
+  return (await resp.json()) as OAuthTokens;
+}
+
+async function refreshMicrosoftToken(refreshToken: string): Promise<OAuthTokens> {
+  const clientId = env.MICROSOFT_CLIENT_ID || '';
+  const clientSecret = env.MICROSOFT_CLIENT_SECRET || '';
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+  });
+  const resp = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!resp.ok) throw new Error(`Microsoft refresh failed: ${resp.status}`);
+  const next = (await resp.json()) as OAuthTokens;
+  if (!next.refresh_token) next.refresh_token = refreshToken;
+  return next;
+}
+
+async function fetchMicrosoftEmail(accessToken: string): Promise<string> {
+  const resp = await fetch('https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok) throw new AppError('Could not read Outlook profile', 400);
+  const data = (await resp.json()) as { mail?: string; userPrincipalName?: string };
+  const email = String(data.mail || data.userPrincipalName || '').trim();
+  if (!email) throw new AppError('Outlook account has no email address', 400);
+  return email;
+}
+
+async function exchangeGoogleCode(code: string): Promise<OAuthTokens> {
+  const clientId = env.GOOGLE_CLIENT_ID || '';
+  const clientSecret = env.GOOGLE_CLIENT_SECRET || '';
+  if (!clientId || !clientSecret) {
+    throw new AppError('Google OAuth is not configured on the server', 503);
+  }
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    redirect_uri: oauthRedirectUri(),
+    grant_type: 'authorization_code',
+  });
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!resp.ok) {
+    throw new AppError(`Google token exchange failed: ${await resp.text()}`, 400);
+  }
+  return (await resp.json()) as OAuthTokens;
+}
+
+async function refreshGoogleToken(
+  refreshToken: string,
+  previous: OAuthTokens
+): Promise<OAuthTokens> {
+  const clientId = env.GOOGLE_CLIENT_ID || '';
+  const clientSecret = env.GOOGLE_CLIENT_SECRET || '';
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret || '',
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+  });
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!resp.ok) throw new Error(`Google refresh failed: ${resp.status}`);
+  const next = (await resp.json()) as OAuthTokens;
+  next.refresh_token = next.refresh_token || previous.refresh_token || refreshToken;
+  return next;
+}
+
+async function fetchGoogleEmail(accessToken: string): Promise<string> {
+  const resp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok) throw new AppError('Could not read Gmail profile', 400);
+  const data = (await resp.json()) as { email?: string };
+  const email = String(data.email || '').trim();
+  if (!email) throw new AppError('Gmail account has no email address', 400);
+  return email;
+}
 
 export const sendService = {
   async startSend(

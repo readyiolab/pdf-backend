@@ -175,6 +175,78 @@ export const generateService = {
     };
   },
 
+  /** Re-queue only rows that failed PDF generation (null pdfKey + FAILED). */
+  async retryFailedOnly(organizationId: string, userId: string, batchId: string) {
+    const batch = await batchService.get(organizationId, batchId);
+    if (batch.status === 'GENERATING') {
+      throw new AppError('Generation is already in progress for this batch', 409);
+    }
+
+    const employees = await db.queryAll<any>(
+      `SELECT id FROM tbl_letter_batch_employee
+        WHERE batchId = ?
+          AND validationStatus IN ('READY', 'WARNING')
+          AND (pdfKey IS NULL OR pdfKey = '')
+          AND sendStatus = 'FAILED'
+        ORDER BY rowIndex ASC`,
+      [batchId]
+    );
+
+    if (!employees.length) {
+      throw new AppError('No failed letters to retry.', 400);
+    }
+
+    for (const emp of employees) {
+      await db.update(
+        'tbl_letter_batch_employee',
+        { sendStatus: 'PENDING', pdfKey: null, pdfFileName: null },
+        'id = ?',
+        [emp.id]
+      );
+    }
+
+    const passwordMode = (batch.passwordMode || 'NONE') as
+      | 'NONE'
+      | 'FROM_COLUMN'
+      | 'EMPLOYEE_ID'
+      | 'LAST4_ID';
+
+    await orgScope.update(
+      organizationId,
+      'tbl_letter_batch',
+      {
+        status: 'GENERATING',
+        // Keep prior successes; only recount failures after this run
+      },
+      'id = ?',
+      [batchId]
+    );
+
+    await writeLetterAudit(organizationId, userId, 'BATCH_GENERATE_RETRY_FAILED', 'letter_batch', batchId, {
+      retryCount: employees.length,
+    });
+
+    const chunkSize = 25;
+    const ids = employees.map((e: any) => e.id as string);
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      await enqueueLetterGenerate(
+        {
+          batchId,
+          organizationId,
+          employeeIds: ids.slice(i, i + chunkSize),
+          passwordMode,
+          userId,
+        },
+        Math.floor(i / chunkSize)
+      );
+    }
+
+    return {
+      batch: await batchService.get(organizationId, batchId),
+      queued: ids.length,
+    };
+  },
+
   async progress(organizationId: string, batchId: string) {
     const batch = await batchService.get(organizationId, batchId);
     // Avoid reserved MySQL aliases (GENERATED is reserved in MySQL 8+)
@@ -211,6 +283,7 @@ export const generateService = {
         totalRows: Number(batch.totalRows || 0),
         aiSummary: batch.aiSummary,
         lastError: null,
+        failedEmployees: [],
       };
     }
 
@@ -236,22 +309,43 @@ export const generateService = {
     const status =
       pending === 0 && batch.status === 'GENERATING' ? 'GENERATED' : batch.status;
 
-    // Surface a sample generation error for the UI
+    // Surface a sample generation error for the UI (plain language)
     let lastError: string | null = null;
-    if (failed > 0 && generated === 0) {
+    let failedEmployees: Array<{ id: string; name: string; message: string }> = [];
+    if (failed > 0) {
       const errRows = await db.queryAll<any>(
-        `SELECT anomalyFlagsJson FROM tbl_letter_batch_employee
-          WHERE batchId = ? AND sendStatus = 'FAILED' LIMIT 1`,
+        `SELECT id, employeeDataJson, anomalyFlagsJson FROM tbl_letter_batch_employee
+          WHERE batchId = ? AND sendStatus = 'FAILED'
+            AND (pdfKey IS NULL OR pdfKey = '')
+          ORDER BY rowIndex ASC LIMIT 20`,
         [batchId]
       );
-      const flags =
-        typeof errRows[0]?.anomalyFlagsJson === 'string'
-          ? JSON.parse(errRows[0].anomalyFlagsJson || '[]')
-          : errRows[0]?.anomalyFlagsJson || [];
-      const genErr = (flags as any[]).find((f) => f.code === 'GENERATION_FAILED');
-      lastError =
-        genErr?.message ||
-        'PDF creation failed on the server. Ask your admin to check Chromium/Puppeteer and storage logs.';
+      failedEmployees = errRows.map((r: any) => {
+        const data =
+          typeof r.employeeDataJson === 'string'
+            ? JSON.parse(r.employeeDataJson || '{}')
+            : r.employeeDataJson || {};
+        const flags =
+          typeof r.anomalyFlagsJson === 'string'
+            ? JSON.parse(r.anomalyFlagsJson || '[]')
+            : r.anomalyFlagsJson || [];
+        const genErr = (flags as any[]).find((f) => f.code === 'GENERATION_FAILED');
+        let message = String(genErr?.message || 'Letter PDF could not be created');
+        if (/chrome|chromium|puppeteer|executable/i.test(message)) {
+          message =
+            'The letter printer on the server is not ready. Please try again in a few minutes, or contact support.';
+        }
+        return {
+          id: r.id,
+          name: String(data.Employee_Name || data.Employee_ID || 'Employee'),
+          message,
+        };
+      });
+      if (generated === 0) {
+        lastError =
+          failedEmployees[0]?.message ||
+          'PDF creation failed. Please try again, or contact support if it keeps happening.';
+      }
     }
 
     return {
@@ -265,6 +359,7 @@ export const generateService = {
       totalRows: Number(batch.totalRows || 0),
       aiSummary: batch.aiSummary,
       lastError,
+      failedEmployees,
     };
   },
 };

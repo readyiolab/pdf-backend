@@ -77,7 +77,17 @@ export const sendBatchSchema = z.object({
     subject: z.string().min(1).max(500).optional(),
     bodyHtml: z.string().max(50_000).optional(),
     confirmSendCount: z.number().int().positive().optional(),
+    mailAccountId: z.string().min(1).optional(),
   }),
   query: z.object({}).optional(),
   params: z.object({ batchId: z.string().min(1) }),
+});
+
+export const mailExchangeSchema = z.object({
+  body: z.object({
+    code: z.string().min(1),
+    state: z.string().min(1),
+  }),
+  query: z.object({}).optional(),
+  params: z.object({}).optional(),
 });

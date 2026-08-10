@@ -1,7 +1,10 @@
+import { Response } from 'express';
+import archiver from 'archiver';
 import { db } from '../../lib/mysql';
 import { orgScope } from './orgScope';
 import { batchService } from './batch.service';
 import { getStorageForUser } from '../../lib/storage';
+import { AppError } from '../../middleware/errorHandler.middleware';
 
 export const historyService = {
   async listBatches(organizationId: string) {
@@ -114,6 +117,82 @@ export const historyService = {
       };
     });
   },
+
+  async streamPdfsZip(
+    organizationId: string,
+    userId: string,
+    batchId: string,
+    res: Response
+  ): Promise<void> {
+    await batchService.get(organizationId, batchId);
+    const rows = await db.queryAll<any>(
+      `SELECT id, pdfKey, pdfFileName FROM tbl_letter_batch_employee
+        WHERE batchId = ? AND pdfKey IS NOT NULL AND pdfKey <> ''
+        ORDER BY rowIndex ASC`,
+      [batchId]
+    );
+    if (!rows.length) {
+      throw new AppError('No PDFs are ready to download for this batch yet.', 404);
+    }
+
+    const { storage } = await getStorageForUser(userId);
+    const archive = archiver('zip', { zlib: { level: 1 } });
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="letters-${batchId.slice(0, 8)}.zip"`
+    );
+    res.setHeader('Cache-Control', 'no-store');
+
+    archive.on('error', (err) => {
+      if (!res.headersSent) {
+        res.status(500).json({ message: err.message });
+      } else {
+        res.end();
+      }
+    });
+    archive.pipe(res);
+
+    const usedNames = new Set<string>();
+    for (const row of rows) {
+      const bytes = await storage.getObjectBytes(row.pdfKey);
+      let name = String(row.pdfFileName || `${row.id}.pdf`).replace(/[\\/]/g, '_');
+      if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
+      if (usedNames.has(name)) {
+        name = `${row.id.slice(0, 8)}_${name}`;
+      }
+      usedNames.add(name);
+      archive.append(bytes, { name });
+    }
+
+    await archive.finalize();
+  },
+
+  async presignEmployeePdf(
+    organizationId: string,
+    userId: string,
+    batchId: string,
+    employeeId: string
+  ) {
+    await batchService.get(organizationId, batchId);
+    const emp = await db.select(
+      'tbl_letter_batch_employee',
+      'id, pdfKey, pdfFileName',
+      'id = ? AND batchId = ?',
+      [employeeId, batchId]
+    );
+    if (!emp?.pdfKey) {
+      throw new AppError('PDF not found for this employee', 404);
+    }
+    const { storage } = await getStorageForUser(userId);
+    const url = await storage.presignGet(emp.pdfKey, { ttlSeconds: 300 });
+    return {
+      url,
+      fileName: emp.pdfFileName || 'letter.pdf',
+      expiresInSeconds: 300,
+    };
+  },
 };
 
 /**
@@ -139,28 +218,21 @@ export async function purgeExpiredLetterPdfs(): Promise<{ purged: number }> {
     );
     if (!rows.length) continue;
 
-    // Best-effort delete via first creator's storage context
     try {
-      const userId = rows[0].createdBy;
-      if (userId) {
-        const { storage } = await getStorageForUser(userId);
+      const uid = rows[0].createdBy;
+      if (uid) {
+        const { storage } = await getStorageForUser(uid);
         for (const r of rows) {
-            try {
-              await storage.deleteObject(r.pdfKey);
-            } catch {
-              /* continue */
-            }
-          await db.update(
-            'tbl_letter_batch_employee',
-            { pdfKey: null },
-            'id = ?',
-            [r.id]
-          );
+          try {
+            await storage.deleteObject(r.pdfKey);
+          } catch {
+            /* continue */
+          }
+          await db.update('tbl_letter_batch_employee', { pdfKey: null }, 'id = ?', [r.id]);
           purged += 1;
         }
       }
     } catch {
-      // Mark cleared even if storage delete fails so retention policy advances
       for (const r of rows) {
         await db.update('tbl_letter_batch_employee', { pdfKey: null }, 'id = ?', [r.id]);
         purged += 1;
