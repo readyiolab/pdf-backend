@@ -122,6 +122,48 @@ async function expireSignDocuments(): Promise<void> {
   logger.info({ count: expired.length }, 'Maintenance: expired signing documents');
 }
 
+/**
+ * Letter Studio retention: clear PDF keys (and delete objects) older than each
+ * org's letterRetentionDays. Metadata / employee rows are kept.
+ */
+async function purgeExpiredLetterPdfs(): Promise<void> {
+  const orgs = await db.queryAll(
+    `SELECT id, letterRetentionDays FROM tbl_organization WHERE status = 'ACTIVE'`
+  );
+  let purged = 0;
+  for (const org of orgs as any[]) {
+    const days = Number(org.letterRetentionDays || 30);
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const rows = await db.queryAll(
+      `SELECT e.id, e.pdfKey
+         FROM tbl_letter_batch_employee e
+         JOIN tbl_letter_batch b ON b.id = e.batchId
+        WHERE b.organizationId = ?
+          AND e.pdfKey IS NOT NULL AND e.pdfKey <> ''
+          AND b.createdAt < ?
+        LIMIT 500`,
+      [org.id, cutoff]
+    );
+    if (!rows.length) continue;
+    const keys = (rows as any[]).map((r) => r.pdfKey as string).filter(Boolean);
+    try {
+      await deleteFromS3(keys);
+    } catch (err) {
+      logger.warn({ err, organizationId: org.id }, 'Letter retention: storage delete failed');
+    }
+    for (const r of rows as any[]) {
+      await db.execute(
+        `UPDATE tbl_letter_batch_employee SET pdfKey = NULL WHERE id = ?`,
+        [r.id]
+      );
+      purged += 1;
+    }
+  }
+  if (purged > 0) {
+    logger.info({ purged }, 'Maintenance: purged expired letter PDFs');
+  }
+}
+
 export async function startMaintenanceWorker() {
   const queue = new Queue(MAINTENANCE_QUEUE, { connection: redis as any });
 
@@ -156,6 +198,7 @@ export async function startMaintenanceWorker() {
         await reapStalledJobs();
         await cleanupExpired();
         await expireSignDocuments();
+        await purgeExpiredLetterPdfs();
       } else if (job.name === BYOC_HEALTH_JOB) {
         await runByocHealthSweep();
       }

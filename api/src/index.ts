@@ -17,6 +17,7 @@ import { createMysqlPool } from './lib/mysql';
 import { isMailerConfigured } from './lib/mailer';
 import { isGoogleAuthConfigured } from './lib/googleAuth';
 import { startSignFinalizeWorker } from './lib/signFinalizeWorker';
+import { startLetterWorkers } from './lib/letterWorkers';
 import { startStorageCacheInvalidationSubscriber, startByocHealthAlertSubscriber } from './lib/storage';
 
 const app = express();
@@ -151,6 +152,8 @@ async function bootstrap() {
 
     // 2. Start sign-finalize worker (seals PDFs off the HTTP path)
     startSignFinalizeWorker();
+    // Letter Studio PDF generation + email send workers (in-API, like sign-finalize)
+    startLetterWorkers();
 
     // 3. Start HTTP Server
     const server = app.listen(env.PORT, () => {

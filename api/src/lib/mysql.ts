@@ -3,6 +3,7 @@ import { logger } from './logger';
 import { ensureColumn, ensureIndex } from './ddl';
 import { initializeSigningSchema } from './signingSchema';
 import { initializeByocSchema } from './byocSchema';
+import { initializeLetterSchema } from './letterSchema';
 import { seedPlatformAdmin } from './seedPlatformAdmin';
 import { db } from './database';
 
@@ -108,6 +109,8 @@ async function initializeDatabase(dbPool: Pool): Promise<void> {
 
     await initializeSigningSchema(conn);
     await initializeByocSchema(conn);
+    // Letter Studio depends on tbl_organization from BYOC schema above.
+    await initializeLetterSchema(conn);
     await seedPlatformAdmin(conn);
 
     logger.info('Prefixed database tables (tbl_) initialization complete.');

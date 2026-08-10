@@ -9,6 +9,8 @@ import aiRoutes from '../modules/ai/ai.routes';
 import { cloudRoutes } from '../modules/cloud/cloud.routes';
 import enterpriseRoutes from '../modules/enterprise/enterprise.routes';
 import adminRoutes from '../modules/admin/admin.routes';
+import orgsRoutes from '../modules/orgs/orgs.routes';
+import lettersRoutes from '../modules/letters/letters.routes';
 
 const router = Router();
 
@@ -25,5 +27,7 @@ router.use('/ai', aiRoutes);
 router.use('/cloud', cloudRoutes);
 router.use('/enterprise', enterpriseRoutes);
 router.use('/admin', adminRoutes);
+router.use('/orgs', orgsRoutes);
+router.use('/letters', lettersRoutes);
 
 export default router;

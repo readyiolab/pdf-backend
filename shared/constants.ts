@@ -57,6 +57,11 @@ export interface PlanLimits {
    * and mechanism as maxMonthlySigns.
    */
   maxMonthlyAiCredits: number;
+
+  /** Max employees (rows) in a single Letter Studio batch. */
+  maxLetterBatchRows: number;
+  /** Whether the plan may send letters via connected Outlook/Gmail. */
+  letterSendingEnabled: boolean;
 }
 
 export const PLAN_LIMITS: Record<'FREE' | 'PRO' | 'ENTERPRISE', PlanLimits> = {
@@ -66,6 +71,8 @@ export const PLAN_LIMITS: Record<'FREE' | 'PRO' | 'ENTERPRISE', PlanLimits> = {
     maxMonthlySigns: 3, // enough to try the feature; upgrade for real use
     maxSignTemplates: 3,
     maxMonthlyAiCredits: 20, // a taste of AI; upgrade for real use
+    maxLetterBatchRows: 5,
+    letterSendingEnabled: false,
   },
   PRO: {
     maxDailyOps: 1000, // Practically unlimited compared to 5, but provides a safety guardrail
@@ -73,6 +80,8 @@ export const PLAN_LIMITS: Record<'FREE' | 'PRO' | 'ENTERPRISE', PlanLimits> = {
     maxMonthlySigns: 200, // generous, but a guardrail against runaway email cost
     maxSignTemplates: 50,
     maxMonthlyAiCredits: 500, // generous, but bounds runaway token spend
+    maxLetterBatchRows: 500,
+    letterSendingEnabled: true,
   },
   ENTERPRISE: {
     maxDailyOps: 10_000,
@@ -80,7 +89,14 @@ export const PLAN_LIMITS: Record<'FREE' | 'PRO' | 'ENTERPRISE', PlanLimits> = {
     maxMonthlySigns: 5_000,
     maxSignTemplates: 500,
     maxMonthlyAiCredits: 10_000,
+    maxLetterBatchRows: 5_000,
+    letterSendingEnabled: true,
   },
 };
+
+/** Dedicated BullMQ queue for Letter Studio PDF generation. */
+export const LETTER_GENERATE_QUEUE = 'letter-generate';
+export const LETTER_PARSE_QUEUE = 'letter-parse';
+export const LETTER_SEND_QUEUE = 'letter-send';
 
 export const SUPPORTED_TOOLS: ToolName[] = [...HEAVY_TOOLS, ...LIGHT_TOOLS];

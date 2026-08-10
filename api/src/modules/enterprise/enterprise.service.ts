@@ -148,6 +148,23 @@ export const enterpriseService = {
         provider: 'PLATFORM',
         status: 'UNCONFIGURED',
       });
+      // Membership row so Letter Studio / multi-user RBAC sees this owner
+      const existingMembership = await db.select(
+        'tbl_org_user',
+        'id',
+        'organizationId = ? AND userId = ?',
+        [id, userId]
+      );
+      if (!existingMembership) {
+        await db.insert('tbl_org_user', {
+          id: crypto.randomUUID(),
+          organizationId: id,
+          userId,
+          role: 'OWNER',
+          invitedBy: userId,
+          status: 'ACTIVE',
+        });
+      }
       org = await db.select('tbl_organization', '*', 'id = ?', [id]);
     }
 
