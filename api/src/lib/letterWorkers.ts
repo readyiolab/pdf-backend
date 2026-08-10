@@ -59,7 +59,7 @@ async function resolveChromeExecutable(): Promise<string | undefined> {
   // Prefer Puppeteer's downloaded Chrome (npx puppeteer browsers install chrome)
   try {
     const puppeteer = await import('puppeteer');
-    const bundled = puppeteer.executablePath();
+    const bundled = await Promise.resolve(puppeteer.executablePath());
     if (bundled && fsSync.existsSync(bundled)) return bundled;
   } catch {
     /* ignore */
