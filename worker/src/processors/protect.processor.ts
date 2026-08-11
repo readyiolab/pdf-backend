@@ -65,9 +65,10 @@ export async function protectProcessor(
 
     // 4. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/protected_${Date.now()}.pdf`;
-    await uploadToS3(protectedLocalPath, destinationKey, 'application/pdf');
+    // uploadToS3 may rewrite to org-{id}/results/... — persist the actual key
+    const outputFileKey = await uploadToS3(protectedLocalPath, destinationKey, 'application/pdf');
 
-    return { outputFileKey: destinationKey };
+    return { outputFileKey };
   } finally {
     cleanupLocalFile(localInputPath);
     if (protectedLocalPath) {

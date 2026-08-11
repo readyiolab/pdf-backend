@@ -67,8 +67,8 @@ export async function pdfToJpgProcessor(
     // 4. Output logic: If single page, upload directly. If multiple, create a ZIP file.
     if (pageFiles.length === 1) {
       const destinationKey = `pdf-saas-results/job-${jobId}/page_1_${Date.now()}.jpg`;
-      await uploadToS3(pageFiles[0], destinationKey, 'image/jpeg');
-      return { outputFileKey: destinationKey };
+      const outputFileKey = await uploadToS3(pageFiles[0], destinationKey, 'image/jpeg');
+      return { outputFileKey };
     } else {
       // Create ZIP
       zipLocalPath = path.join(tempDir, `images_${crypto.randomUUID()}.zip`);
@@ -91,9 +91,9 @@ export async function pdfToJpgProcessor(
       await archivePromise;
 
       const destinationKey = `pdf-saas-results/job-${jobId}/pages_${Date.now()}.zip`;
-      await uploadToS3(zipLocalPath, destinationKey, 'application/zip');
-      
-      return { outputFileKey: destinationKey };
+      const outputFileKey = await uploadToS3(zipLocalPath, destinationKey, 'application/zip');
+
+      return { outputFileKey };
     }
   } finally {
     cleanupLocalFile(localInputPath);

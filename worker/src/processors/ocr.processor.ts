@@ -102,9 +102,9 @@ export async function ocrProcessor(
 
     // 5. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/ocr_${Date.now()}.pdf`;
-    await uploadToS3(mergedOcrPath, destinationKey, 'application/pdf');
+    const outputFileKey = await uploadToS3(mergedOcrPath, destinationKey, 'application/pdf');
 
-    return { outputFileKey: destinationKey };
+    return { outputFileKey };
   } finally {
     cleanupLocalFile(localInputPath);
     rasterFiles.forEach((f) => cleanupLocalFile(f));

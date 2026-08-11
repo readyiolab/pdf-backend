@@ -62,9 +62,9 @@ export async function officeConvertProcessor(
 
     // 4. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/converted_${Date.now()}.pdf`;
-    await uploadToS3(convertedLocalPath, destinationKey, 'application/pdf');
+    const outputFileKey = await uploadToS3(convertedLocalPath, destinationKey, 'application/pdf');
 
-    return { outputFileKey: destinationKey };
+    return { outputFileKey };
   } finally {
     cleanupLocalFile(localInputPath);
     if (convertedLocalPath) {

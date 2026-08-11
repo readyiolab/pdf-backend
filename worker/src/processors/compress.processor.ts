@@ -70,9 +70,9 @@ export async function compressProcessor(
 
     // 5. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/compressed_${Date.now()}.pdf`;
-    await uploadToS3(compressedLocalPath, destinationKey, 'application/pdf');
+    const outputFileKey = await uploadToS3(compressedLocalPath, destinationKey, 'application/pdf');
 
-    return { outputFileKey: destinationKey };
+    return { outputFileKey };
   } finally {
     cleanupLocalFile(localInputPath);
     if (compressedLocalPath) {

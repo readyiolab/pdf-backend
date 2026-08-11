@@ -71,9 +71,9 @@ export async function splitProcessor(
 
     // 6. Upload output to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/split_${Date.now()}.pdf`;
-    await uploadToS3(splitLocalPath, destinationKey, 'application/pdf');
+    const outputFileKey = await uploadToS3(splitLocalPath, destinationKey, 'application/pdf');
 
-    return { outputFileKey: destinationKey };
+    return { outputFileKey };
   } finally {
     cleanupLocalFile(localInputPath);
     if (splitLocalPath) {

@@ -51,9 +51,9 @@ export async function rotateProcessor(
 
     // 5. Upload to S3
     const destinationKey = `pdf-saas-results/job-${jobId}/rotated_${Date.now()}.pdf`;
-    await uploadToS3(rotatedLocalPath, destinationKey, 'application/pdf');
+    const outputFileKey = await uploadToS3(rotatedLocalPath, destinationKey, 'application/pdf');
 
-    return { outputFileKey: destinationKey };
+    return { outputFileKey };
   } finally {
     cleanupLocalFile(localInputPath);
     if (rotatedLocalPath) {
