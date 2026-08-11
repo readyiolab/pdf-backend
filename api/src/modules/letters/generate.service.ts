@@ -43,19 +43,35 @@ function resolvePassword(
 export const generateService = {
   async samplePreview(organizationId: string, batchId: string) {
     const batch = await batchService.get(organizationId, batchId);
-    const employees = await db.queryAll<any>(
-      `SELECT * FROM tbl_letter_batch_employee
-        WHERE batchId = ? AND validationStatus IN ('READY', 'WARNING')
-        ORDER BY rowIndex ASC`,
+    const countRow = await db.query<any>(
+      `SELECT COUNT(*) AS total FROM tbl_letter_batch_employee
+        WHERE batchId = ? AND validationStatus IN ('READY', 'WARNING')`,
       [batchId]
     );
-    if (!employees.length) {
+    const eligibleCount = Number(countRow?.total || 0);
+    if (!eligibleCount) {
       throw new AppError('No ready/warning rows to preview. Fix blocked rows first.', 400);
     }
 
-    const first = employees[0];
-    const mid = employees[Math.floor(employees.length / 2)];
-    const last = employees[employees.length - 1];
+    const first = await db.query<any>(
+      `SELECT id, rowIndex, employeeDataJson FROM tbl_letter_batch_employee
+        WHERE batchId = ? AND validationStatus IN ('READY', 'WARNING')
+        ORDER BY rowIndex ASC LIMIT 1`,
+      [batchId]
+    );
+    const midOffset = Math.floor((eligibleCount - 1) / 2);
+    const mid = await db.query<any>(
+      `SELECT id, rowIndex, employeeDataJson FROM tbl_letter_batch_employee
+        WHERE batchId = ? AND validationStatus IN ('READY', 'WARNING')
+        ORDER BY rowIndex ASC LIMIT 1 OFFSET ${midOffset}`,
+      [batchId]
+    );
+    const last = await db.query<any>(
+      `SELECT id, rowIndex, employeeDataJson FROM tbl_letter_batch_employee
+        WHERE batchId = ? AND validationStatus IN ('READY', 'WARNING')
+        ORDER BY rowIndex DESC LIMIT 1`,
+      [batchId]
+    );
 
     const pick = (row: any) => {
       const data = parseJson<Record<string, string>>(row.employeeDataJson, {});
@@ -76,10 +92,10 @@ export const generateService = {
       batch,
       samples: {
         first: pick(first),
-        middle: pick(mid),
-        last: pick(last),
+        middle: pick(mid || first),
+        last: pick(last || first),
       },
-      eligibleCount: employees.length,
+      eligibleCount,
     };
   },
 
@@ -97,17 +113,6 @@ export const generateService = {
       throw new AppError('Generation is already in progress for this batch', 409);
     }
 
-    const employees = await db.queryAll<any>(
-      `SELECT id, employeeDataJson FROM tbl_letter_batch_employee
-        WHERE batchId = ? AND validationStatus IN ('READY', 'WARNING')
-        ORDER BY rowIndex ASC`,
-      [batchId]
-    );
-
-    if (!employees.length) {
-      throw new AppError('No eligible employees to generate. Resolve blocked rows first.', 400);
-    }
-
     // Encrypt passwords at rest when present — never log them
     if (passwordMode !== 'NONE' && !isSecretBoxConfigured()) {
       throw new AppError(
@@ -116,20 +121,41 @@ export const generateService = {
       );
     }
 
-    for (const emp of employees) {
-      const data = parseJson<Record<string, string>>(emp.employeeDataJson, {});
-      const password = resolvePassword(passwordMode, data);
-      await db.update(
-        'tbl_letter_batch_employee',
-        {
-          encryptedPdfPassword: password ? encryptSecret(password) : null,
-          pdfKey: null,
-          pdfFileName: null,
-          sendStatus: 'PENDING',
-        },
-        'id = ?',
-        [emp.id]
+    // Chunked load + password updates to avoid unbounded memory/time
+    const pageSize = 500;
+    const ids: string[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await db.queryAll<any>(
+        `SELECT id, employeeDataJson FROM tbl_letter_batch_employee
+          WHERE batchId = ? AND validationStatus IN ('READY', 'WARNING')
+          ORDER BY rowIndex ASC
+          LIMIT ${pageSize} OFFSET ${offset}`,
+        [batchId]
       );
+      if (!page.length) break;
+      for (const emp of page) {
+        const data = parseJson<Record<string, string>>(emp.employeeDataJson, {});
+        const password = resolvePassword(passwordMode, data);
+        await db.update(
+          'tbl_letter_batch_employee',
+          {
+            encryptedPdfPassword: password ? encryptSecret(password) : null,
+            pdfKey: null,
+            pdfFileName: null,
+            sendStatus: 'PENDING',
+          },
+          'id = ?',
+          [emp.id]
+        );
+        ids.push(emp.id);
+      }
+      offset += page.length;
+      if (page.length < pageSize) break;
+    }
+
+    if (!ids.length) {
+      throw new AppError('No eligible employees to generate. Resolve blocked rows first.', 400);
     }
 
     await orgScope.update(
@@ -147,13 +173,12 @@ export const generateService = {
     );
 
     await writeLetterAudit(organizationId, userId, 'BATCH_GENERATE_APPROVED', 'letter_batch', batchId, {
-      eligible: employees.length,
+      eligible: ids.length,
       passwordMode,
       // Explicitly do not include any passwords
     });
 
     const chunkSize = 25;
-    const ids = employees.map((e: any) => e.id as string);
     for (let i = 0; i < ids.length; i += chunkSize) {
       const chunk = ids.slice(i, i + chunkSize);
       await enqueueLetterGenerate(

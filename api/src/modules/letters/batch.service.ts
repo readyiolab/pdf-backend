@@ -245,10 +245,21 @@ export const batchService = {
       ? await templateService.get(organizationId, batch.templateId)
       : null;
 
-    const employees = await db.queryAll<any>(
-      `SELECT id, rowIndex, employeeDataJson FROM tbl_letter_batch_employee WHERE batchId = ? ORDER BY rowIndex ASC`,
-      [batchId]
-    );
+    const employees: any[] = [];
+    const pageSize = 500;
+    let offset = 0;
+    for (;;) {
+      const page = await db.queryAll<any>(
+        `SELECT id, rowIndex, employeeDataJson FROM tbl_letter_batch_employee
+          WHERE batchId = ? ORDER BY rowIndex ASC
+          LIMIT ${pageSize} OFFSET ${offset}`,
+        [batchId]
+      );
+      if (!page.length) break;
+      employees.push(...page);
+      offset += page.length;
+      if (page.length < pageSize) break;
+    }
     if (!employees.length) throw new AppError('No employees in batch. Map your Excel first.', 400);
 
     const templateTokens = (template?.fieldTokens || []) as string[];

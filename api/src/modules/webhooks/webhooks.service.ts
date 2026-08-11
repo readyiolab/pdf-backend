@@ -9,8 +9,8 @@ export const webhooksService = {
   async handleRazorpayWebhook(rawBody: string, signature: string) {
     const webhookSecret = env.RAZORPAY_WEBHOOK_SECRET;
     if (!webhookSecret) {
-      logger.warn('Razorpay Webhook secret is not configured. Webhook request skipped verification.');
-      return { success: false, message: 'Webhook secret missing' };
+      logger.error('Razorpay Webhook secret is not configured');
+      throw new AppError('Webhook secret is not configured', 503);
     }
 
     // 1. Verify webhook signature (constant-time comparison to avoid timing leaks)
@@ -33,11 +33,32 @@ export const webhooksService = {
     let event: any;
     try {
       event = JSON.parse(rawBody);
-    } catch (err) {
+    } catch {
       throw new AppError('Invalid JSON payload', 400);
     }
 
     const eventName = event.event;
+    const eventId = String(event.id || event.event_id || '').trim();
+    if (!eventId) {
+      throw new AppError('Webhook event id missing', 400);
+    }
+
+    // 3. Idempotency — Razorpay may retry; ignore duplicates
+    try {
+      await db.insert('tbl_webhook_event', {
+        id: crypto.randomUUID(),
+        provider: 'razorpay',
+        eventId,
+        eventName: eventName || null,
+      });
+    } catch (err: any) {
+      if (err?.code === 'ER_DUP_ENTRY') {
+        logger.info({ eventId, eventName }, 'Duplicate Razorpay webhook ignored');
+        return { success: true, message: 'Duplicate event ignored' };
+      }
+      throw err;
+    }
+
     const subscriptionData = event.payload?.subscription?.entity;
 
     if (!subscriptionData) {
@@ -49,9 +70,9 @@ export const webhooksService = {
     const subStatus = subscriptionData.status;
     const currentEndEpoch = subscriptionData.current_end; // unix timestamp
 
-    logger.info({ eventName, subId, subStatus }, 'Processing Razorpay webhook');
+    logger.info({ eventName, subId, subStatus, eventId }, 'Processing Razorpay webhook');
 
-    // 3. Process events
+    // 4. Process events
     switch (eventName) {
       case 'subscription.activated':
       case 'subscription.charged': {

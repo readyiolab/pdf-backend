@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { db } from '../lib/mysql';
-import { verifyToken, isTokenRevoked } from '../lib/jwt';
+import { verifyToken, isTokenRevoked, CUSTOMER_JWT_AUDIENCE, ADMIN_JWT_AUDIENCE } from '../lib/jwt';
 import { getCachedUser, setCachedUser, CachedUser } from '../lib/userCache';
 import { AppError } from './errorHandler.middleware';
 import { logger } from '../lib/logger';
@@ -70,6 +70,24 @@ export const authMiddleware = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
+  return runAuth(req, res, next, CUSTOMER_JWT_AUDIENCE);
+};
+
+/** Platform admin JWT (aud=platform-admin). Do not use on customer routes. */
+export const adminAuthMiddleware = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  return runAuth(req, res, next, ADMIN_JWT_AUDIENCE);
+};
+
+async function runAuth(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+  audience: string
+): Promise<void> {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -80,7 +98,7 @@ export const authMiddleware = async (
 
     let decoded;
     try {
-      decoded = verifyToken(token);
+      decoded = verifyToken(token, { audience });
     } catch {
       throw new AppError('Invalid or expired authentication token', 401);
     }
@@ -89,7 +107,9 @@ export const authMiddleware = async (
     try {
       revoked = decoded.jti ? await isTokenRevoked(decoded.jti) : false;
     } catch (err) {
-      logger.warn({ err }, 'Redis unavailable, skipping token revocation check');
+      // Fail closed: if Redis is down we cannot confirm the token was not revoked.
+      logger.error({ err }, 'Redis unavailable for token revocation check — rejecting request');
+      throw new AppError('Authentication service temporarily unavailable. Please try again.', 503);
     }
     if (revoked) {
       throw new AppError('This session has been logged out', 401);
@@ -178,4 +198,4 @@ export const authMiddleware = async (
   } catch (err) {
     next(err);
   }
-};
+}

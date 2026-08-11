@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { jobsService } from './jobs.service';
-import { verifyToken, isTokenRevoked } from '../../lib/jwt';
+import { verifyToken, isTokenRevoked, CUSTOMER_JWT_AUDIENCE } from '../../lib/jwt';
 import { subscribeJob } from '../../lib/queueEvents';
 
 export const jobsController = {
@@ -51,7 +51,7 @@ export const jobsController = {
     // Authenticate via query token before opening the stream.
     let userId: string;
     try {
-      const decoded = verifyToken(token);
+      const decoded = verifyToken(token, { audience: CUSTOMER_JWT_AUDIENCE });
       if (decoded.jti && (await isTokenRevoked(decoded.jti))) {
         res.status(401).json({ status: 'error', message: 'Session logged out' });
         return;

@@ -18,6 +18,7 @@ import {
   getOrganizationIdForUser,
   reportRuntimeStorageFailure,
 } from '../../lib/storage';
+import { isOwnedUploadKey } from '../../lib/objectKeyOwnership';
 import crypto from 'crypto';
 
 async function validateInputs(
@@ -25,12 +26,17 @@ async function validateInputs(
   tool: ToolName,
   maxFileSize: number,
   bindingId: string | null,
-  organizationId: string | null
+  organizationId: string | null,
+  userId: string
 ): Promise<void> {
   const allowed = TOOL_INPUT_TYPES[tool];
 
   await Promise.all(
     inputFiles.map(async (key) => {
+      if (!isOwnedUploadKey(key, userId, organizationId)) {
+        throw new AppError('Invalid file key for this account.', 403);
+      }
+
       let size: number;
       try {
         size = await headObjectSize(key, bindingId);
@@ -80,7 +86,8 @@ export const jobsService = {
       tool as ToolName,
       limits.maxFileSize,
       storageBindingId,
-      organizationId
+      organizationId,
+      userId
     );
 
     const reserve = await db.execute(

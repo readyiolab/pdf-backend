@@ -5,13 +5,15 @@ import { signFinalizeQueue, type SignFinalizePayload } from './queue';
 import { finalizeService } from '../modules/signing/finalize.service';
 import { logger } from './logger';
 
+let finalizeWorker: Worker<SignFinalizePayload> | null = null;
+
 /**
  * Processes PDF sealing off the HTTP request path.
  * Runs inside the API process so it can reuse finalizeService (pdf-lib, P12, TSA)
  * without duplicating the signing stack into the PDF-tools worker.
  */
 export function startSignFinalizeWorker(): Worker<SignFinalizePayload> {
-  const worker = new Worker<SignFinalizePayload>(
+  finalizeWorker = new Worker<SignFinalizePayload>(
     SIGN_FINALIZE_QUEUE,
     async (job) => {
       const { documentId } = job.data;
@@ -26,11 +28,11 @@ export function startSignFinalizeWorker(): Worker<SignFinalizePayload> {
     }
   );
 
-  worker.on('completed', (job) => {
+  finalizeWorker.on('completed', (job) => {
     logger.info({ jobId: job.id, documentId: job.data.documentId }, 'Sign-finalize completed');
   });
 
-  worker.on('failed', (job, err) => {
+  finalizeWorker.on('failed', (job, err) => {
     logger.error(
       { jobId: job?.id, documentId: job?.data?.documentId, err },
       'Sign-finalize failed'
@@ -41,5 +43,10 @@ export function startSignFinalizeWorker(): Worker<SignFinalizePayload> {
   void signFinalizeQueue;
 
   logger.info('Sign-finalize worker listening');
-  return worker;
+  return finalizeWorker;
+}
+
+export async function stopSignFinalizeWorker(): Promise<void> {
+  await finalizeWorker?.close();
+  finalizeWorker = null;
 }

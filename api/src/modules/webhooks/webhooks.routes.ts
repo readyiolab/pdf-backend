@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import express from 'express';
 import { webhooksController } from './webhooks.controller';
+import { webhookRateLimiter } from '../../middleware/rateLimit.middleware';
 
 const router = Router();
 
@@ -8,6 +9,7 @@ const router = Router();
 // against the exact bytes Razorpay signed. A 1MB cap guards against abuse.
 router.post(
   '/razorpay',
+  webhookRateLimiter,
   express.raw({ type: '*/*', limit: '1mb' }),
   webhooksController.razorpayWebhook
 );

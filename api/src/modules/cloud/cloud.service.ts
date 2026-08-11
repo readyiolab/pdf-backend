@@ -1,6 +1,36 @@
 import crypto from 'crypto';
 import { db } from '../../lib/mysql';
 import { CloudIntegration, ConnectCloudDto, CloudFileItem } from './cloud.types';
+import { AppError } from '../../middleware/errorHandler.middleware';
+import {
+  encryptSecret,
+  decryptSecret,
+  isSecretBoxConfigured,
+} from '../../lib/secretBox';
+
+function sealToken(plain: string | null | undefined): string | null {
+  if (!plain) return null;
+  if (!isSecretBoxConfigured()) {
+    throw new AppError(
+      'Server cannot store cloud tokens without INFRA_CREDENTIALS_KEY',
+      503
+    );
+  }
+  return encryptSecret(plain);
+}
+
+/** Decrypt stored token; tolerate legacy plaintext until reconnected. */
+export function openCloudToken(stored: string | null | undefined): string | null {
+  if (!stored) return null;
+  if (stored.startsWith('v1:')) {
+    return decryptSecret(stored);
+  }
+  try {
+    return decryptSecret(stored);
+  } catch {
+    return stored;
+  }
+}
 
 export class CloudService {
   /**
@@ -33,8 +63,8 @@ export class CloudService {
    */
   static async connectProvider(userId: string, dto: ConnectCloudDto): Promise<CloudIntegration> {
     const id = crypto.randomUUID();
-    const accessToken = dto.accessToken || `oauth2_token_${Date.now()}`;
-    const refreshToken = dto.refreshToken || null;
+    const accessToken = sealToken(dto.accessToken || `oauth2_token_${Date.now()}`);
+    const refreshToken = sealToken(dto.refreshToken || null);
 
     await db.execute(
       `INSERT INTO tbl_cloud_integration (id, userId, provider, accountEmail, accessToken, refreshToken, autoSync, lastSyncAt)

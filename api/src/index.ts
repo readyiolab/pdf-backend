@@ -18,9 +18,11 @@ import { createDashboard } from './lib/bullBoard';
 import { createMysqlPool } from './lib/mysql';
 import { isMailerConfigured } from './lib/mailer';
 import { isGoogleAuthConfigured } from './lib/googleAuth';
-import { startSignFinalizeWorker } from './lib/signFinalizeWorker';
-import { startLetterWorkers } from './lib/letterWorkers';
+import { startSignFinalizeWorker, stopSignFinalizeWorker } from './lib/signFinalizeWorker';
+import { startLetterWorkers, stopLetterWorkers } from './lib/letterWorkers';
 import { startStorageCacheInvalidationSubscriber, startByocHealthAlertSubscriber } from './lib/storage';
+import { redis } from './lib/redis';
+import { db } from './lib/mysql';
 
 const app = express();
 
@@ -80,7 +82,13 @@ app.use(
   pinoHttp({
     logger,
     autoLogging: {
-      ignore: (req) => req.url === '/health' || req.url === '/api/health',
+      ignore: (req) =>
+        req.url === '/health' ||
+        req.url === '/api/health' ||
+        req.url === '/health/live' ||
+        req.url === '/health/ready' ||
+        req.url === '/api/health/live' ||
+        req.url === '/api/health/ready',
     },
   })
 );
@@ -196,16 +204,47 @@ async function bootstrap() {
     });
 
     // Graceful Shutdown Handler
-    const gracefulShutdown = () => {
+    const gracefulShutdown = async () => {
       logger.info('Shutting down API Service...');
-      server.close(() => {
-        logger.info('HTTP server closed.');
-        process.exit(0);
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          logger.info('HTTP server closed.');
+          resolve();
+        });
       });
+      try {
+        await stopLetterWorkers();
+        logger.info('Letter workers closed.');
+      } catch (err) {
+        logger.warn({ err }, 'Error closing letter workers');
+      }
+      try {
+        await stopSignFinalizeWorker();
+        logger.info('Sign-finalize worker closed.');
+      } catch (err) {
+        logger.warn({ err }, 'Error closing sign-finalize worker');
+      }
+      try {
+        await redis.quit();
+        logger.info('Redis connection closed.');
+      } catch (err) {
+        logger.warn({ err }, 'Error closing Redis');
+      }
+      try {
+        await db.close();
+        logger.info('MySQL pool closed.');
+      } catch (err) {
+        logger.warn({ err }, 'Error closing MySQL');
+      }
+      process.exit(0);
     };
 
-    process.on('SIGTERM', gracefulShutdown);
-    process.on('SIGINT', gracefulShutdown);
+    process.on('SIGTERM', () => {
+      void gracefulShutdown();
+    });
+    process.on('SIGINT', () => {
+      void gracefulShutdown();
+    });
   } catch (err) {
     logger.error({ err }, 'Failed to bootstrap API service');
     process.exit(1);

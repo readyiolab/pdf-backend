@@ -10,6 +10,7 @@ import { batchService } from './batch.service';
 import { enqueueLetterSend } from '../../lib/letterQueues';
 import { orgScope } from './orgScope';
 import { logger } from '../../lib/logger';
+import { fetchWithTimeout } from '../../lib/httpFetch';
 
 function newId() {
   return crypto.randomUUID();
@@ -226,11 +227,15 @@ async function exchangeMicrosoftCode(code: string): Promise<OAuthTokens> {
     redirect_uri: oauthRedirectUri(),
     grant_type: 'authorization_code',
   });
-  const resp = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
+  const resp = await fetchWithTimeout(
+    'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    },
+    15_000
+  );
   if (!resp.ok) {
     throw new AppError(`Microsoft token exchange failed: ${await resp.text()}`, 400);
   }
@@ -246,11 +251,15 @@ async function refreshMicrosoftToken(refreshToken: string): Promise<OAuthTokens>
     refresh_token: refreshToken,
     grant_type: 'refresh_token',
   });
-  const resp = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
+  const resp = await fetchWithTimeout(
+    'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    },
+    15_000
+  );
   if (!resp.ok) throw new Error(`Microsoft refresh failed: ${resp.status}`);
   const next = (await resp.json()) as OAuthTokens;
   if (!next.refresh_token) next.refresh_token = refreshToken;
@@ -258,9 +267,13 @@ async function refreshMicrosoftToken(refreshToken: string): Promise<OAuthTokens>
 }
 
 async function fetchMicrosoftEmail(accessToken: string): Promise<string> {
-  const resp = await fetch('https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const resp = await fetchWithTimeout(
+    'https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName',
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+    15_000
+  );
   if (!resp.ok) throw new AppError('Could not read Outlook profile', 400);
   const data = (await resp.json()) as { mail?: string; userPrincipalName?: string };
   const email = String(data.mail || data.userPrincipalName || '').trim();
@@ -281,11 +294,15 @@ async function exchangeGoogleCode(code: string): Promise<OAuthTokens> {
     redirect_uri: oauthRedirectUri(),
     grant_type: 'authorization_code',
   });
-  const resp = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
+  const resp = await fetchWithTimeout(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    },
+    15_000
+  );
   if (!resp.ok) {
     throw new AppError(`Google token exchange failed: ${await resp.text()}`, 400);
   }
@@ -304,11 +321,15 @@ async function refreshGoogleToken(
     refresh_token: refreshToken,
     grant_type: 'refresh_token',
   });
-  const resp = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
+  const resp = await fetchWithTimeout(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    },
+    15_000
+  );
   if (!resp.ok) throw new Error(`Google refresh failed: ${resp.status}`);
   const next = (await resp.json()) as OAuthTokens;
   next.refresh_token = next.refresh_token || previous.refresh_token || refreshToken;
@@ -316,9 +337,13 @@ async function refreshGoogleToken(
 }
 
 async function fetchGoogleEmail(accessToken: string): Promise<string> {
-  const resp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const resp = await fetchWithTimeout(
+    'https://www.googleapis.com/oauth2/v2/userinfo',
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+    15_000
+  );
   if (!resp.ok) throw new AppError('Could not read Gmail profile', 400);
   const data = (await resp.json()) as { email?: string };
   const email = String(data.email || '').trim();

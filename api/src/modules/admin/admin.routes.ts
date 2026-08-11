@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authMiddleware, requireFullAccount } from '../../middleware/auth.middleware';
+import { adminAuthMiddleware, requireFullAccount } from '../../middleware/auth.middleware';
 import { requirePlatformAdmin } from '../../middleware/platformAdmin.middleware';
 import { authRateLimiter } from '../../middleware/rateLimit.middleware';
 import { adminController } from './admin.controller';
@@ -9,7 +9,7 @@ const router = Router();
 // Admin JWT login (no prior auth) — issues audience=platform-admin token
 router.post('/login', authRateLimiter, adminController.login);
 
-router.use(authMiddleware, requireFullAccount, requirePlatformAdmin);
+router.use(adminAuthMiddleware, requireFullAccount, requirePlatformAdmin);
 
 router.get('/dashboard', adminController.dashboard);
 router.get('/organizations', adminController.listOrganizations);

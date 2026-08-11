@@ -33,7 +33,7 @@ function cosine(a: number[], b: number[]): number {
 async function embedTexts(texts: string[]): Promise<number[][]> {
   if (!env.OPENAI_API_KEY) throw new AppError('AI is not configured', 503);
   const OpenAI = (await import('openai')).default;
-  const client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+  const client = new OpenAI({ apiKey: env.OPENAI_API_KEY, timeout: 60_000, maxRetries: 2 });
   const res = await client.embeddings.create({
     model: 'text-embedding-3-small',
     input: texts,
@@ -41,26 +41,33 @@ async function embedTexts(texts: string[]): Promise<number[][]> {
   return res.data.map((d) => d.embedding as number[]);
 }
 
-async function consumeAiCredit(userId: string, plan: 'FREE' | 'PRO' | 'ENTERPRISE') {
-  const user = await db.select('tbl_user', '*', 'id = ?', [userId]);
-  if (!user) throw new AppError('User not found', 404);
+async function reserveAiCredit(userId: string, plan: 'FREE' | 'PRO' | 'ENTERPRISE') {
   const limits = PLAN_LIMITS[plan];
-  const resetAt = user.monthlyAiResetAt ? new Date(user.monthlyAiResetAt) : new Date(0);
-  let used = Number(user.monthlyAiUsed || 0);
-  const monthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  if (resetAt.getTime() < monthAgo) {
-    used = 0;
-    await db.update(
-      'tbl_user',
-      { monthlyAiUsed: 0, monthlyAiResetAt: new Date() },
-      'id = ?',
-      [userId]
+  const limit = limits.maxMonthlyAiCredits;
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const reserve = await db.execute(
+    `UPDATE tbl_user
+        SET monthlyAiUsed    = IF(monthlyAiResetAt < ?, 1, monthlyAiUsed + 1),
+            monthlyAiResetAt = IF(monthlyAiResetAt < ?, ?, monthlyAiResetAt)
+      WHERE id = ? AND (monthlyAiResetAt < ? OR monthlyAiUsed < ?)`,
+    [cutoff, cutoff, now, userId, cutoff, limit]
+  );
+  if (reserve.affectedRows === 0) {
+    throw new AppError(
+      plan === 'FREE'
+        ? `You've used all ${limit} free AI requests this month. Upgrade to PRO for more.`
+        : `You've used all ${limit} AI requests for this month. It resets on a rolling 30-day basis.`,
+      403
     );
   }
-  if (used >= limits.maxMonthlyAiCredits) {
-    throw new AppError('Monthly AI credit limit reached. Upgrade your plan for more.', 403);
-  }
-  await db.update('tbl_user', { monthlyAiUsed: used + 1 }, 'id = ?', [userId]);
+}
+
+async function refundAiCredit(userId: string): Promise<void> {
+  await db.execute(
+    'UPDATE tbl_user SET monthlyAiUsed = GREATEST(monthlyAiUsed - 1, 0) WHERE id = ?',
+    [userId]
+  );
 }
 
 function repairTokens(contentJson: any, allowed: string[]): { content: any; repaired: string[] } {
@@ -354,7 +361,7 @@ export const letterAiService = {
     plan: 'FREE' | 'PRO' | 'ENTERPRISE',
     input: { instruction: string; letterType?: string }
   ) {
-    await consumeAiCredit(userId, plan);
+    await reserveAiCredit(userId, plan);
     const snippets = await this.retrieveSimilar(
       organizationId,
       `${input.letterType || ''} ${input.instruction}`
@@ -405,7 +412,7 @@ export const letterAiService = {
     plan: 'FREE' | 'PRO' | 'ENTERPRISE',
     input: { text: string; mode: 'formal' | 'concise' | 'add-disclaimer' }
   ) {
-    await consumeAiCredit(userId, plan);
+    await reserveAiCredit(userId, plan);
     const provider = getAiProvider();
     if (!provider.isConfigured()) throw new AppError('AI is not configured', 503);
 
@@ -484,7 +491,7 @@ No markdown fences, no commentary.`;
     plan: 'FREE' | 'PRO' | 'ENTERPRISE',
     headers: string[]
   ) {
-    await consumeAiCredit(userId, plan);
+    await reserveAiCredit(userId, plan);
     const fields: string[] = [...SYSTEM_FIELDS];
     const vectors = await embedTexts([...headers, ...fields]);
     const headerVecs = vectors.slice(0, headers.length);
@@ -555,10 +562,23 @@ No markdown fences, no commentary.`;
 
   async detectAnomalies(organizationId: string, userId: string, batchId: string) {
     await batchService.get(organizationId, batchId);
-    const employees = await db.queryAll<any>(
-      `SELECT id, rowIndex, employeeDataJson, anomalyFlagsJson FROM tbl_letter_batch_employee WHERE batchId = ?`,
-      [batchId]
-    );
+
+    const employees: any[] = [];
+    const pageSize = 500;
+    let offset = 0;
+    for (;;) {
+      const page = await db.queryAll<any>(
+        `SELECT id, rowIndex, employeeDataJson, anomalyFlagsJson FROM tbl_letter_batch_employee
+          WHERE batchId = ?
+          ORDER BY rowIndex ASC
+          LIMIT ${pageSize} OFFSET ${offset}`,
+        [batchId]
+      );
+      if (!page.length) break;
+      employees.push(...page);
+      offset += page.length;
+      if (page.length < pageSize) break;
+    }
 
     const rows = employees.map((e: any) => ({
       id: e.id,
@@ -733,7 +753,7 @@ No markdown fences, no commentary.`;
     plan: 'FREE' | 'PRO' | 'ENTERPRISE',
     question: string
   ) {
-    await consumeAiCredit(userId, plan);
+    await reserveAiCredit(userId, plan);
     const provider = getAiProvider();
     if (!provider.isConfigured()) throw new AppError('AI is not configured', 503);
 
@@ -828,7 +848,7 @@ Return JSON only. Never return SQL.`,
     plan: 'FREE' | 'PRO' | 'ENTERPRISE',
     letterType: string
   ) {
-    await consumeAiCredit(userId, plan);
+    await reserveAiCredit(userId, plan);
     const existing = await orgScope.selectAll(
       organizationId,
       'tbl_letter_template',

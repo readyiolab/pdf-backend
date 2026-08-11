@@ -34,8 +34,10 @@ export const rateLimiter = rateLimit({
 });
 
 // Strict limiter for auth endpoints — brute-force protection.
+// Fail closed when Redis is down: better to reject logins than allow unbounded attempts.
 export const authRateLimiter = rateLimit({
   ...common,
+  passOnStoreError: false,
   windowMs: 15 * 60 * 1000,
   max: 10, // 10 login/register attempts per IP per 15 min
   store: redisStore('rl:auth:'),
@@ -43,6 +45,21 @@ export const authRateLimiter = rateLimit({
   message: {
     status: 'error',
     message: 'Too many authentication attempts. Please try again in 15 minutes.',
+  },
+});
+
+/**
+ * Razorpay / payment webhooks — public unauthenticated mount; keep tight.
+ */
+export const webhookRateLimiter = rateLimit({
+  ...common,
+  passOnStoreError: false,
+  windowMs: 60 * 1000,
+  max: 120,
+  store: redisStore('rl:webhook:'),
+  message: {
+    status: 'error',
+    message: 'Too many webhook requests.',
   },
 });
 

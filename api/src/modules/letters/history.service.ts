@@ -5,6 +5,7 @@ import { orgScope } from './orgScope';
 import { batchService } from './batch.service';
 import { getStorageForUser } from '../../lib/storage';
 import { AppError } from '../../middleware/errorHandler.middleware';
+import { logger } from '../../lib/logger';
 
 export const historyService = {
   async listBatches(organizationId: string) {
@@ -207,36 +208,43 @@ export async function purgeExpiredLetterPdfs(): Promise<{ purged: number }> {
   for (const org of orgs) {
     const days = Number(org.letterRetentionDays || 30);
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const rows = await db.queryAll<any>(
-      `SELECT e.id, e.pdfKey, b.createdBy
-         FROM tbl_letter_batch_employee e
-         JOIN tbl_letter_batch b ON b.id = e.batchId
-        WHERE b.organizationId = ?
-          AND e.pdfKey IS NOT NULL AND e.pdfKey <> ''
-          AND b.createdAt < ?`,
-      [org.id, cutoff]
-    );
-    if (!rows.length) continue;
+    const pageSize = 200;
+    let offset = 0;
+    for (;;) {
+      const rows = await db.queryAll<any>(
+        `SELECT e.id, e.pdfKey, b.createdBy
+           FROM tbl_letter_batch_employee e
+           JOIN tbl_letter_batch b ON b.id = e.batchId
+          WHERE b.organizationId = ?
+            AND e.pdfKey IS NOT NULL AND e.pdfKey <> ''
+            AND b.createdAt < ?
+          ORDER BY e.id ASC
+          LIMIT ${pageSize} OFFSET ${offset}`,
+        [org.id, cutoff]
+      );
+      if (!rows.length) break;
 
-    try {
-      const uid = rows[0].createdBy;
-      if (uid) {
-        const { storage } = await getStorageForUser(uid);
-        for (const r of rows) {
-          try {
-            await storage.deleteObject(r.pdfKey);
-          } catch {
-            /* continue */
+      try {
+        const uid = rows[0].createdBy;
+        if (uid) {
+          const { storage } = await getStorageForUser(uid);
+          for (const r of rows) {
+            try {
+              await storage.deleteObject(r.pdfKey);
+            } catch {
+              /* continue */
+            }
+            await db.update('tbl_letter_batch_employee', { pdfKey: null }, 'id = ?', [r.id]);
+            purged += 1;
           }
-          await db.update('tbl_letter_batch_employee', { pdfKey: null }, 'id = ?', [r.id]);
-          purged += 1;
         }
+      } catch (err) {
+        logger.warn({ err, orgId: org.id }, 'Letter PDF retention purge failed for org');
       }
-    } catch {
-      for (const r of rows) {
-        await db.update('tbl_letter_batch_employee', { pdfKey: null }, 'id = ?', [r.id]);
-        purged += 1;
-      }
+
+      if (rows.length < pageSize) break;
+      // Keys were nullified, so keep offset at 0 to walk remaining matching rows
+      offset = 0;
     }
   }
   return { purged };

@@ -9,6 +9,8 @@ import { orgsService } from '../orgs/orgs.service';
 import { getStorageForUser } from '../../lib/storage';
 import { env } from '../../config/env';
 import { AppError } from '../../middleware/errorHandler.middleware';
+import { isOwnedUploadKey } from '../../lib/objectKeyOwnership';
+import { fetchWithTimeout } from '../../lib/httpFetch';
 import crypto from 'crypto';
 
 async function ensureOrg(req: Request) {
@@ -225,7 +227,11 @@ export const lettersController = {
         throw new AppError('sourceFileKey or fileBase64 is required', 400);
       }
 
-      const { storage } = await getStorageForUser(req.user.id);
+      const { storage, organizationId } = await getStorageForUser(req.user.id);
+      if (!isOwnedUploadKey(req.body.sourceFileKey, req.user.id, organizationId)) {
+        throw new AppError('Invalid file key for this account.', 403);
+      }
+
       let buffer: Buffer;
       if (typeof (storage as any).getObjectBytes === 'function') {
         buffer = await storage.getObjectBytes(req.body.sourceFileKey);
@@ -233,7 +239,7 @@ export const lettersController = {
         const url = await storage.presignGet(req.body.sourceFileKey, {
           ttlSeconds: env.DOWNLOAD_URL_TTL,
         });
-        const resp = await fetch(url);
+        const resp = await fetchWithTimeout(url, {}, 30_000);
         if (!resp.ok) throw new AppError('Failed to download uploaded spreadsheet', 500);
         buffer = Buffer.from(await resp.arrayBuffer());
       }

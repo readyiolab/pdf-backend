@@ -11,6 +11,7 @@ import type { LetterGenerateJob, LetterSendJob } from './letterQueues';
 import { buildLetterHtml, safePdfFileName } from '../modules/letters/letterRender';
 import { getStorageForUser } from './storage';
 import { env } from '../config/env';
+import { fetchWithTimeout } from './httpFetch';
 
 function parseJson<T>(value: unknown, fallback: T): T {
   if (value == null) return fallback;
@@ -141,8 +142,12 @@ async function launchChromeBrowser() {
     );
   }
 
-  return withTimeout(
-    puppeteer.launch({
+  // Do not race-abandon puppeteer.launch — an orphaned Chrome process would leak.
+  // Puppeteer's own launch timeout closes the browser; we still track the handle
+  // so a hard outer timeout can force-close if needed.
+  let browser: any = null;
+  const launchPromise = puppeteer
+    .launch({
       headless: true,
       executablePath,
       args: [
@@ -154,10 +159,25 @@ async function launchChromeBrowser() {
         '--font-render-hinting=none',
       ],
       timeout: 30_000,
-    }),
-    45_000,
-    'Chrome launch'
-  );
+    })
+    .then((b) => {
+      browser = b;
+      return b;
+    });
+
+  try {
+    return await withTimeout(launchPromise, 45_000, 'Chrome launch');
+  } catch (err) {
+    if (browser) {
+      await browser.close().catch(() => undefined);
+    } else {
+      // Launch may still resolve after our timeout — close when it does.
+      void launchPromise
+        .then((b) => b.close())
+        .catch(() => undefined);
+    }
+    throw err;
+  }
 }
 
 async function renderPdfWithBrowser(browser: any, html: string, outPath: string): Promise<void> {
@@ -304,11 +324,15 @@ async function processGenerateChunk(job: Job<LetterGenerateJob>) {
             'application/pdf',
             env.PRESIGN_TTL_SECONDS
           );
-          const resp = await fetch(putUrl, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/pdf' },
-            body: bytes,
-          });
+          const resp = await fetchWithTimeout(
+            putUrl,
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/pdf' },
+              body: bytes,
+            },
+            60_000
+          );
           if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
         }
 
@@ -554,26 +578,34 @@ async function sendViaGraph(
   };
 
   if (msg.asDraft) {
-    const resp = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
+    const resp = await fetchWithTimeout(
+      'https://graph.microsoft.com/v1.0/me/messages',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload.message),
+      },
+      30_000
+    );
+    if (!resp.ok) throw new Error(`Graph draft failed: ${resp.status} ${await resp.text()}`);
+    return;
+  }
+
+  const resp = await fetchWithTimeout(
+    'https://graph.microsoft.com/v1.0/me/sendMail',
+    {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(payload.message),
-    });
-    if (!resp.ok) throw new Error(`Graph draft failed: ${resp.status} ${await resp.text()}`);
-    return;
-  }
-
-  const resp = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
+    30_000
+  );
   if (!resp.ok) throw new Error(`Graph send failed: ${resp.status} ${await resp.text()}`);
 }
 
@@ -623,14 +655,18 @@ async function sendViaGmail(
     : 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
 
   const body = msg.asDraft ? { message: { raw } } : { raw };
-  const resp = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
+  const resp = await fetchWithTimeout(
+    endpoint,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+    30_000
+  );
   if (!resp.ok) throw new Error(`Gmail API failed: ${resp.status} ${await resp.text()}`);
 }
 

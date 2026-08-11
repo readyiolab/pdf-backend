@@ -183,14 +183,23 @@ export const diagramsService = {
     if (input.folderId !== undefined) data.folderId = input.folderId;
 
     if (input.content !== undefined) {
-      const nextVersion = Number(row.currentVersion || 1) + 1;
+      const expectedVersion = Number(row.currentVersion || 1);
+      const nextVersion = expectedVersion + 1;
       const contentJson = JSON.stringify(input.content);
       data.contentJson = contentJson;
       data.currentVersion = nextVersion;
-      await db.update('tbl_diagram', data, 'id = ? AND organizationId = ?', [
-        id,
-        organizationId,
-      ]);
+      const result = await db.update(
+        'tbl_diagram',
+        data,
+        'id = ? AND organizationId = ? AND currentVersion = ?',
+        [id, organizationId, expectedVersion]
+      );
+      if (result.affected_rows === 0) {
+        throw new AppError(
+          'Diagram was updated elsewhere. Reload and try again.',
+          409
+        );
+      }
       await insertVersion(id, nextVersion, contentJson, userId);
       return this.get(organizationId, id);
     }
@@ -422,7 +431,8 @@ export const diagramsService = {
       throw new AppError('This share link is view-only', 403);
     }
 
-    const nextVersion = Number(row.currentVersion || 1) + 1;
+    const expectedVersion = Number(row.currentVersion || 1);
+    const nextVersion = expectedVersion + 1;
     const contentJson = JSON.stringify(input.content);
     const data: Record<string, unknown> = {
       contentJson,
@@ -430,7 +440,15 @@ export const diagramsService = {
     };
     if (input.title !== undefined) data.title = input.title.trim();
 
-    await db.update('tbl_diagram', data, 'id = ?', [row.id]);
+    const result = await db.update(
+      'tbl_diagram',
+      data,
+      'id = ? AND currentVersion = ?',
+      [row.id, expectedVersion]
+    );
+    if (result.affected_rows === 0) {
+      throw new AppError('Diagram was updated elsewhere. Reload and try again.', 409);
+    }
     await insertVersion(row.id, nextVersion, contentJson, row.createdBy);
     return this.get(row.organizationId, row.id);
   },

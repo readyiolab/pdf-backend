@@ -18,7 +18,11 @@ let client: OpenAI | null = null;
 function getClient(): OpenAI {
   if (client) return client;
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
-  client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+  client = new OpenAI({
+    apiKey: env.OPENAI_API_KEY,
+    timeout: 60_000,
+    maxRetries: 2,
+  });
   return client;
 }
 

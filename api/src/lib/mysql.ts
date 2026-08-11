@@ -108,6 +108,18 @@ async function initializeDatabase(dbPool: Pool): Promise<void> {
     await ensureIndex(conn, 'tbl_subscription', 'idx_sub_razorpay', 'razorpaySubId');
     await ensureIndex(conn, 'tbl_cloud_integration', 'idx_cloud_user', 'userId');
 
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS tbl_webhook_event (
+        id VARCHAR(255) PRIMARY KEY,
+        provider VARCHAR(50) NOT NULL,
+        eventId VARCHAR(255) NOT NULL,
+        eventName VARCHAR(100) NULL,
+        processedAt DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        UNIQUE KEY uq_webhook_provider_event (provider, eventId),
+        INDEX idx_webhook_processed (processedAt)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
     await initializeSigningSchema(conn);
     await initializeByocSchema(conn);
     // Letter Studio depends on tbl_organization from BYOC schema above.
