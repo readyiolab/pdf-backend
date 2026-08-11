@@ -246,6 +246,22 @@ export const diagramsService = {
     }));
   },
 
+  async getVersionContent(
+    organizationId: string,
+    id: string,
+    version: number
+  ): Promise<DiagramDocument> {
+    await requireDiagram(organizationId, id);
+    const snap = await db.select(
+      'tbl_diagram_version',
+      '*',
+      'diagramId = ? AND version = ?',
+      [id, version]
+    );
+    if (!snap) throw new AppError('Version not found', 404);
+    return parseContent(snap.contentJson);
+  },
+
   async restoreVersion(
     organizationId: string,
     userId: string,

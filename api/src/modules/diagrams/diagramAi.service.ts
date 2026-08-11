@@ -350,4 +350,277 @@ export const diagramAiService = {
       }
     });
   },
+
+  async analyze(userId: string, plan: Plan, page: DiagramPage) {
+    if (!isAiConfigured()) {
+      throw new AppError('Diagram AI is not configured. Set OPENAI_API_KEY.', 503);
+    }
+    const provider = getAiProvider();
+    const validatedPage = diagramPageSchema.parse(page);
+
+    // Local graph checks first (no credit) — AI adds semantic issues.
+    const localIssues = localAnalyze(validatedPage);
+
+    return withCredit(userId, plan, async () => {
+      try {
+        const first = await provider.complete(
+          [
+            {
+              role: 'system',
+              content: `You analyze architecture diagrams. Return ONLY JSON:
+{"issues":[{"severity":"error"|"warning"|"info","kind":"string","message":"string","nodeIds":["..."],"edgeIds":["..."]}]}
+Detect: broken/dangling edges, disconnected components, duplicates, missing return paths, circular deps, poor naming, overlaps, unclear flows. No markdown.`,
+            },
+            { role: 'user', content: JSON.stringify(validatedPage) },
+          ],
+          { maxTokens: 2048 }
+        );
+        let aiIssues: any[] = [];
+        try {
+          const parsed = parseModelJson(first.text) as { issues?: unknown };
+          if (Array.isArray(parsed?.issues)) aiIssues = parsed.issues;
+        } catch {
+          /* keep local only */
+        }
+        const issues = [...localIssues, ...aiIssues].slice(0, 40);
+        logger.info({ userId, count: issues.length }, 'Diagram AI analyze');
+        return { issues };
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        logger.error({ err, userId }, 'Diagram AI analyze failed');
+        return { issues: localIssues };
+      }
+    });
+  },
+
+  async explain(userId: string, plan: Plan, page: DiagramPage) {
+    if (!isAiConfigured()) {
+      throw new AppError('Diagram AI is not configured. Set OPENAI_API_KEY.', 503);
+    }
+    const provider = getAiProvider();
+    const validatedPage = diagramPageSchema.parse(page);
+
+    return withCredit(userId, plan, async () => {
+      try {
+        const first = await provider.complete(
+          [
+            {
+              role: 'system',
+              content: `Explain this diagram step-by-step. Return ONLY JSON:
+{"summary":"string","steps":[{"index":1,"title":"string","detail":"string","nodeIds":["id"]}]}
+Each step should reference real node ids from the page. No markdown.`,
+            },
+            { role: 'user', content: JSON.stringify(validatedPage) },
+          ],
+          { maxTokens: 2048 }
+        );
+        const parsed = parseModelJson(first.text) as {
+          summary?: string;
+          steps?: Array<{ index?: number; title?: string; detail?: string; nodeIds?: string[] }>;
+        };
+        const steps = (parsed.steps || []).map((s, i) => ({
+          index: s.index ?? i + 1,
+          title: String(s.title || `Step ${i + 1}`),
+          detail: String(s.detail || ''),
+          nodeIds: Array.isArray(s.nodeIds) ? s.nodeIds.map(String) : [],
+        }));
+        return { summary: String(parsed.summary || ''), steps };
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        logger.error({ err, userId }, 'Diagram AI explain failed');
+        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+      }
+    });
+  },
+
+  async explainSelection(
+    userId: string,
+    plan: Plan,
+    page: DiagramPage,
+    nodeIds: string[]
+  ) {
+    if (!isAiConfigured()) {
+      throw new AppError('Diagram AI is not configured. Set OPENAI_API_KEY.', 503);
+    }
+    const provider = getAiProvider();
+    const validatedPage = diagramPageSchema.parse(page);
+    const idSet = new Set(nodeIds);
+    const nodes = validatedPage.nodes.filter((n) => idSet.has(n.id));
+    const edges = validatedPage.edges.filter(
+      (e) => idSet.has(e.source) || idSet.has(e.target)
+    );
+
+    return withCredit(userId, plan, async () => {
+      try {
+        const first = await provider.complete(
+          [
+            {
+              role: 'system',
+              content:
+                'Explain the selected diagram components in clear prose (2-5 sentences). Return ONLY JSON: {"explanation":"..."}. No markdown.',
+            },
+            {
+              role: 'user',
+              content: JSON.stringify({ nodes, edges, fullPage: validatedPage }),
+            },
+          ],
+          { maxTokens: 1024 }
+        );
+        const parsed = parseModelJson(first.text) as { explanation?: string };
+        return { explanation: String(parsed.explanation || first.text) };
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        logger.error({ err, userId }, 'Diagram AI explainSelection failed');
+        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+      }
+    });
+  },
+
+  async diffSummary(
+    userId: string,
+    plan: Plan,
+    fromDoc: DiagramDocument,
+    toDoc: DiagramDocument,
+    fromVersion: number,
+    toVersion: number
+  ) {
+    if (!isAiConfigured()) {
+      throw new AppError('Diagram AI is not configured. Set OPENAI_API_KEY.', 503);
+    }
+    const provider = getAiProvider();
+
+    return withCredit(userId, plan, async () => {
+      try {
+        const first = await provider.complete(
+          [
+            {
+              role: 'system',
+              content: `Summarize what changed between two diagram versions in 3-6 bullet points as plain text paragraphs. Return ONLY JSON: {"summary":"..."}. No markdown fences.`,
+            },
+            {
+              role: 'user',
+              content: JSON.stringify({
+                fromVersion,
+                toVersion,
+                from: fromDoc,
+                to: toDoc,
+              }),
+            },
+          ],
+          { maxTokens: 1024 }
+        );
+        const parsed = parseModelJson(first.text) as { summary?: string };
+        return { summary: String(parsed.summary || first.text) };
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        logger.error({ err, userId }, 'Diagram AI diffSummary failed');
+        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+      }
+    });
+  },
 };
+
+function localAnalyze(page: DiagramPage) {
+  const issues: Array<{
+    severity: 'error' | 'warning' | 'info';
+    kind: string;
+    message: string;
+    nodeIds?: string[];
+    edgeIds?: string[];
+  }> = [];
+  const nodeIds = new Set(page.nodes.map((n) => n.id));
+  const labels = new Map<string, string[]>();
+
+  for (const e of page.edges) {
+    if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
+      issues.push({
+        severity: 'error',
+        kind: 'dangling_edge',
+        message: `Connector "${e.label || e.id}" references a missing shape.`,
+        edgeIds: [e.id],
+      });
+    }
+  }
+
+  for (const n of page.nodes) {
+    const key = (n.label || '').trim().toLowerCase();
+    if (!key) {
+      issues.push({
+        severity: 'warning',
+        kind: 'unnamed',
+        message: 'A shape has no label.',
+        nodeIds: [n.id],
+      });
+    } else {
+      const list = labels.get(key) || [];
+      list.push(n.id);
+      labels.set(key, list);
+    }
+  }
+  for (const [, ids] of labels) {
+    if (ids.length > 1) {
+      issues.push({
+        severity: 'warning',
+        kind: 'duplicate',
+        message: 'Duplicate component labels detected.',
+        nodeIds: ids,
+      });
+    }
+  }
+
+  // Overlaps (axis-aligned AABB)
+  for (let i = 0; i < page.nodes.length; i++) {
+    for (let j = i + 1; j < page.nodes.length; j++) {
+      const a = page.nodes[i]!;
+      const b = page.nodes[j]!;
+      if (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      ) {
+        issues.push({
+          severity: 'info',
+          kind: 'overlap',
+          message: `"${a.label || 'Shape'}" overlaps "${b.label || 'Shape'}".`,
+          nodeIds: [a.id, b.id],
+        });
+      }
+    }
+  }
+
+  // Disconnected components (simple BFS)
+  if (page.nodes.length > 1) {
+    const adj = new Map<string, Set<string>>();
+    for (const n of page.nodes) adj.set(n.id, new Set());
+    for (const e of page.edges) {
+      if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) continue;
+      adj.get(e.source)!.add(e.target);
+      adj.get(e.target)!.add(e.source);
+    }
+    const seen = new Set<string>();
+    const start = page.nodes[0]!.id;
+    const q = [start];
+    seen.add(start);
+    while (q.length) {
+      const cur = q.shift()!;
+      for (const n of adj.get(cur) || []) {
+        if (!seen.has(n)) {
+          seen.add(n);
+          q.push(n);
+        }
+      }
+    }
+    const isolated = page.nodes.filter((n) => !seen.has(n.id)).map((n) => n.id);
+    if (isolated.length) {
+      issues.push({
+        severity: 'warning',
+        kind: 'disconnected',
+        message: `${isolated.length} component(s) are disconnected from the main flow.`,
+        nodeIds: isolated.slice(0, 12),
+      });
+    }
+  }
+
+  return issues;
+}

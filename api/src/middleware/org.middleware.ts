@@ -58,8 +58,15 @@ export async function resolveOrgContext(req: Request): Promise<OrgContext> {
       'organizationId = ? AND userId = ? AND status = ?',
       [requestedOrgId, req.user.id, 'ACTIVE']
     );
+    // Stale X-Organization-Id from a previous account / invite — fall back
+    // to the caller's first ACTIVE membership instead of hard-403.
     if (!membership) {
-      throw new AppError('You are not a member of this organization', 403);
+      membership = await db.select(
+        'tbl_org_user',
+        '*',
+        'userId = ? AND status = ?',
+        [req.user.id, 'ACTIVE']
+      );
     }
   } else {
     membership = await db.select(
@@ -68,9 +75,9 @@ export async function resolveOrgContext(req: Request): Promise<OrgContext> {
       'userId = ? AND status = ?',
       [req.user.id, 'ACTIVE']
     );
-    if (!membership) {
-      throw new AppError('No organization membership found. Create or join an organization first.', 404);
-    }
+  }
+  if (!membership) {
+    throw new AppError('No organization membership found. Create or join an organization first.', 404);
   }
 
   const org = await db.select('tbl_organization', 'id, name, status', 'id = ?', [

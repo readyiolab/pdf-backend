@@ -215,6 +215,40 @@ export const aiFromImageSchema = z.object({
   params: emptyParams,
 });
 
+export const aiAnalyzeSchema = z.object({
+  params: z.object({ id: z.string().min(1) }),
+  body: z.object({
+    page: diagramPageSchema,
+  }),
+  query: emptyQuery,
+});
+
+export const aiExplainSchema = z.object({
+  params: z.object({ id: z.string().min(1) }),
+  body: z.object({
+    page: diagramPageSchema,
+  }),
+  query: emptyQuery,
+});
+
+export const aiExplainSelectionSchema = z.object({
+  params: z.object({ id: z.string().min(1) }),
+  body: z.object({
+    page: diagramPageSchema,
+    nodeIds: z.array(z.string().min(1)).min(1).max(50),
+  }),
+  query: emptyQuery,
+});
+
+export const aiDiffSummarySchema = z.object({
+  params: z.object({ id: z.string().min(1) }),
+  body: z.object({
+    fromVersion: z.number().int().positive(),
+    toVersion: z.number().int().positive(),
+  }),
+  query: emptyQuery,
+});
+
 export const diagramPatchOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('addNode'), node: diagramNodeSchema }),
   z.object({

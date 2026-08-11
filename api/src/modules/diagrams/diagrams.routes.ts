@@ -6,6 +6,7 @@ import {
 } from '../../middleware/auth.middleware';
 import { requireOrgRole } from '../../middleware/org.middleware';
 import { validate } from '../../middleware/validate.middleware';
+import { aiRateLimiter } from '../../middleware/rateLimit.middleware';
 import { diagramsController } from './diagrams.controller';
 import {
   createDiagramSchema,
@@ -21,6 +22,10 @@ import {
   aiGenerateSchema,
   aiEditSchema,
   aiFromImageSchema,
+  aiAnalyzeSchema,
+  aiExplainSchema,
+  aiExplainSelectionSchema,
+  aiDiffSummarySchema,
 } from './diagrams.types';
 
 const router = Router();
@@ -54,12 +59,14 @@ router.delete(
 router.post(
   '/ai/generate',
   editor,
+  aiRateLimiter,
   validate(aiGenerateSchema as any),
   diagramsController.aiGenerate
 );
 router.post(
   '/ai/from-image',
   editor,
+  aiRateLimiter,
   validate(aiFromImageSchema as any),
   diagramsController.aiFromImage
 );
@@ -138,8 +145,38 @@ router.get(
 router.post(
   '/:id/ai/edit',
   editor,
+  aiRateLimiter,
   validate(aiEditSchema as any),
   diagramsController.aiEdit
+);
+
+router.post(
+  '/:id/ai/analyze',
+  editor,
+  aiRateLimiter,
+  validate(aiAnalyzeSchema as any),
+  diagramsController.aiAnalyze
+);
+router.post(
+  '/:id/ai/explain',
+  editor,
+  aiRateLimiter,
+  validate(aiExplainSchema as any),
+  diagramsController.aiExplain
+);
+router.post(
+  '/:id/ai/explain-selection',
+  editor,
+  aiRateLimiter,
+  validate(aiExplainSelectionSchema as any),
+  diagramsController.aiExplainSelection
+);
+router.post(
+  '/:id/ai/diff-summary',
+  editor,
+  aiRateLimiter,
+  validate(aiDiffSummarySchema as any),
+  diagramsController.aiDiffSummary
 );
 
 export default router;

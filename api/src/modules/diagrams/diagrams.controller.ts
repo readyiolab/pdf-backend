@@ -235,6 +235,68 @@ export const diagramsController = {
     }
   },
 
+  async aiAnalyze(req: Request, res: Response, next: NextFunction) {
+    try {
+      await diagramsService.get(req.orgContext!.organizationId, req.params.id);
+      res.json(
+        await diagramAiService.analyze(req.user.id, req.user.plan, req.body.page)
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+
+  async aiExplain(req: Request, res: Response, next: NextFunction) {
+    try {
+      await diagramsService.get(req.orgContext!.organizationId, req.params.id);
+      res.json(
+        await diagramAiService.explain(req.user.id, req.user.plan, req.body.page)
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+
+  async aiExplainSelection(req: Request, res: Response, next: NextFunction) {
+    try {
+      await diagramsService.get(req.orgContext!.organizationId, req.params.id);
+      res.json(
+        await diagramAiService.explainSelection(
+          req.user.id,
+          req.user.plan,
+          req.body.page,
+          req.body.nodeIds
+        )
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+
+  async aiDiffSummary(req: Request, res: Response, next: NextFunction) {
+    try {
+      const orgId = req.orgContext!.organizationId;
+      const id = req.params.id;
+      await diagramsService.get(orgId, id);
+      const fromV = Number(req.body.fromVersion);
+      const toV = Number(req.body.toVersion);
+      const fromSnap = await diagramsService.getVersionContent(orgId, id, fromV);
+      const toSnap = await diagramsService.getVersionContent(orgId, id, toV);
+      res.json(
+        await diagramAiService.diffSummary(
+          req.user.id,
+          req.user.plan,
+          fromSnap,
+          toSnap,
+          fromV,
+          toV
+        )
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+
   async getShared(req: Request, res: Response, next: NextFunction) {
     try {
       res.json(await diagramsService.getByShareToken(req.params.token));
