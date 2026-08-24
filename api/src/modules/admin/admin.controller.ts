@@ -105,4 +105,34 @@ export const adminController = {
       next(err);
     }
   },
+
+  async listCustomers(req: Request, res: Response, next: NextFunction) {
+    try {
+      const q = z
+        .object({
+          repeat: z.enum(['first', 'repeat', 'all']).optional(),
+          channel: z.string().max(64).optional(),
+          campaign: z.string().max(255).optional(),
+          from: z.string().optional(),
+          to: z.string().optional(),
+          q: z.string().max(200).optional(),
+          page: z.coerce.number().int().positive().optional(),
+          limit: z.coerce.number().int().positive().max(100).optional(),
+        })
+        .parse(req.query);
+      const data = await adminService.listCustomers(q);
+      res.json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async getCustomer(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await adminService.getCustomer(req.params.id);
+      res.json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  },
 };

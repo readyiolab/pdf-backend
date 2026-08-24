@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Job } from 'bullmq';
 import { JobPayload } from '../../../shared/types';
 import { logger } from '../lib/logger';
@@ -129,6 +130,25 @@ export async function jobRouter(job: Job<JobPayload>): Promise<void> {
         'UPDATE tbl_job SET status = "COMPLETED", completedAt = ?, outputFile = ? WHERE id = ?',
         [new Date(), result.outputFileKey, jobId]
       );
+
+      // Customer tracking — best-effort, never fail the job.
+      if (job.data?.userId) {
+        await db
+          .execute(
+            `INSERT INTO tbl_customer_event (id, userId, contactId, visitorId, type, metaJson, createdAt)
+             VALUES (?, ?, NULL, NULL, 'job_completed', ?, ?)`,
+            [
+              crypto.randomUUID(),
+              job.data.userId,
+              JSON.stringify({ tool, jobId }),
+              new Date(),
+            ]
+          )
+          .catch((err) =>
+            logger.warn({ err, jobId }, 'Failed to record job_completed customer event')
+          );
+      }
+
       await job.updateProgress(100);
     } catch (err: any) {
       const errorMsg = err.message || 'Unknown processing error';

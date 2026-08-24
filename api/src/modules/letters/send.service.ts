@@ -11,6 +11,7 @@ import { enqueueLetterSend } from '../../lib/letterQueues';
 import { orgScope } from './orgScope';
 import { logger } from '../../lib/logger';
 import { fetchWithTimeout } from '../../lib/httpFetch';
+import { recordCustomerEvent, upsertContact } from '../../lib/customerTracking';
 
 function newId() {
   return crypto.randomUUID();
@@ -455,6 +456,51 @@ export const sendService = {
         Math.floor(i / chunkSize)
       );
     }
+
+    // Customer tracking — best-effort contacts + letter_sent
+    void (async () => {
+      try {
+        const rows = await db.queryAll<any>(
+          `SELECT employeeDataJson FROM tbl_letter_batch_employee
+            WHERE batchId = ? AND id IN (${ids.map(() => '?').join(',')})`,
+          [batchId, ...ids]
+        );
+        for (const row of rows) {
+          let data: Record<string, string> = {};
+          try {
+            data =
+              typeof row.employeeDataJson === 'string'
+                ? JSON.parse(row.employeeDataJson || '{}')
+                : (row.employeeDataJson as any) || {};
+          } catch {
+            data = {};
+          }
+          const email = String(data.Employee_Email || '').trim();
+          const name = String(data.Employee_Name || '').trim() || null;
+          if (!email) continue;
+          const contactId = await upsertContact({
+            email,
+            name,
+            source: 'letter',
+          });
+          if (contactId) {
+            await recordCustomerEvent({
+              type: 'letter_sent',
+              userId,
+              contactId,
+              meta: { batchId, mode: input.mode },
+            });
+          }
+        }
+        await recordCustomerEvent({
+          type: 'letter_sent',
+          userId,
+          meta: { batchId, mode: input.mode, recipientCount: ids.length },
+        });
+      } catch (err) {
+        logger.warn({ err, batchId, userId }, 'Failed to record letter_sent tracking');
+      }
+    })();
 
     return {
       mode: input.mode,

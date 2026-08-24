@@ -9,6 +9,8 @@ import { isMailerConfigured, sendMail } from '../../lib/mailer';
 import { logger } from '../../lib/logger';
 import { invalidateUser } from '../../lib/userCache';
 import { isGoogleAuthConfigured, verifyGoogleIdToken } from '../../lib/googleAuth';
+import { stitchUserAttribution } from '../../lib/customerTracking';
+import type { AttributionPayload } from '../../lib/customerTracking';
 
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -78,7 +80,7 @@ function toAuthUser(row: {
 
 export const authService = {
   async register(input: RegisterInput): Promise<AuthResponse> {
-    const { email, password, name } = input;
+    const { email, password, name, attribution } = input;
     const normalizedEmail = email.toLowerCase();
 
     const existing = await db.select('tbl_user', 'id', 'email = ?', [normalizedEmail]);
@@ -102,6 +104,14 @@ export const authService = {
       authProvider: 'password',
     });
 
+    void stitchUserAttribution({
+      userId,
+      email: normalizedEmail,
+      name: name || null,
+      attribution: attribution as AttributionPayload | undefined,
+      eventType: 'signup',
+    });
+
     // Do not block the API response on SMTP — Gmail can take several seconds.
     void sendVerificationEmail(normalizedEmail, name || null, verify.raw).catch((err) => {
       logger.error({ err, email: normalizedEmail }, 'Failed to send verification email');
@@ -122,7 +132,7 @@ export const authService = {
   },
 
   async login(input: LoginInput): Promise<AuthResponse> {
-    const { email, password } = input;
+    const { email, password, attribution } = input;
 
     const user: any = await db.select(
       'tbl_user',
@@ -150,6 +160,14 @@ export const authService = {
       throw new AppError('Invalid email or password', 401);
     }
 
+    void stitchUserAttribution({
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      attribution: attribution as AttributionPayload | undefined,
+      eventType: 'login',
+    });
+
     const token = signToken({ userId: user.id, email: user.email, plan: user.plan });
 
     return {
@@ -163,7 +181,7 @@ export const authService = {
    * @guest.local domain for later cleanup and are treated as verified so
    * workspace tools work; signing/AI still require requireFullAccount.
    */
-  async guest(): Promise<AuthResponse> {
+  async guest(attribution?: AttributionPayload): Promise<AuthResponse> {
     const userId = crypto.randomUUID();
     const email = `guest-${userId}@guest.local`;
 
@@ -176,6 +194,14 @@ export const authService = {
       plan: 'FREE',
       emailVerified: 1,
       authProvider: 'guest',
+    });
+
+    void stitchUserAttribution({
+      userId,
+      email,
+      name: 'Guest',
+      attribution,
+      eventType: 'signup',
     });
 
     const token = signToken({ userId, email, plan: 'FREE', isGuest: true });
@@ -200,7 +226,10 @@ export const authService = {
    * audience, issuer, and email_verified with google-auth-library — never trust
    * a client-supplied email body.
    */
-  async googleAuth(input: { credential?: string }): Promise<AuthResponse> {
+  async googleAuth(input: {
+    credential?: string;
+    attribution?: AttributionPayload;
+  }): Promise<AuthResponse> {
     if (!isGoogleAuthConfigured()) {
       throw new AppError('Google sign-in is not configured on this server', 503);
     }
@@ -219,7 +248,9 @@ export const authService = {
       [normalizedEmail]
     );
 
+    let isNew = false;
     if (!user) {
+      isNew = true;
       const userId = crypto.randomUUID();
       await db.insert('tbl_user', {
         id: userId,
@@ -262,6 +293,14 @@ export const authService = {
       user.emailVerified = 1;
       logger.info({ userId: user.id, email: normalizedEmail }, 'Signed in via Google');
     }
+
+    void stitchUserAttribution({
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      attribution: input.attribution,
+      eventType: isNew ? 'signup' : 'login',
+    });
 
     const token = signToken({ userId: user.id, email: user.email, plan: user.plan });
 

@@ -23,7 +23,7 @@ export const authController = {
 
   async guest(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await authService.guest();
+      const result = await authService.guest(req.body?.attribution);
       res.status(201).json(result);
     } catch (err) {
       next(err);

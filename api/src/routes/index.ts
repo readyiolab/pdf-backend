@@ -11,6 +11,7 @@ import enterpriseRoutes from '../modules/enterprise/enterprise.routes';
 import adminRoutes from '../modules/admin/admin.routes';
 import orgsRoutes from '../modules/orgs/orgs.routes';
 import lettersRoutes from '../modules/letters/letters.routes';
+import trackingRoutes from '../modules/tracking/tracking.routes';
 
 const router = Router();
 
@@ -29,5 +30,6 @@ router.use('/enterprise', enterpriseRoutes);
 router.use('/admin', adminRoutes);
 router.use('/orgs', orgsRoutes);
 router.use('/letters', lettersRoutes);
+router.use('/tracking', trackingRoutes);
 
 export default router;

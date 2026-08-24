@@ -7,6 +7,7 @@ import { isMailerConfigured, sendMail } from '../../lib/mailer';
 import { invitationEmail } from './email.templates';
 import { SIGNING_LIMITS } from '../../../../shared/signing';
 import { PLAN_LIMITS } from '../../../../shared/constants';
+import { recordCustomerEvent, upsertContact } from '../../lib/customerTracking';
 
 /** Rolling window (ms) over which the monthly signing quota is counted. */
 const SIGN_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -199,6 +200,33 @@ export const sendService = {
         503
       );
     }
+
+    void (async () => {
+      try {
+        for (const r of recipients as any[]) {
+          const contactId = await upsertContact({
+            email: r.email,
+            name: r.name,
+            source: 'esign',
+          });
+          if (contactId) {
+            await recordCustomerEvent({
+              type: 'esign_sent',
+              userId,
+              contactId,
+              meta: { documentId, role: r.role },
+            });
+          }
+        }
+        await recordCustomerEvent({
+          type: 'esign_sent',
+          userId,
+          meta: { documentId, recipientCount: recipients.length },
+        });
+      } catch (err) {
+        logger.warn({ err, documentId, userId }, 'Failed to record esign_sent tracking');
+      }
+    })();
 
     return { documentId, status: 'SENT', notified };
   },

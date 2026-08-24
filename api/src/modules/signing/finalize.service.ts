@@ -10,6 +10,7 @@ import { signPdf } from './digitalSignature.service';
 import { auditService } from './audit.service';
 import { completionEmail } from './email.templates';
 import { SIGNING_LIMITS } from '../../../../shared/signing';
+import { recordCustomerEvent, upsertContact } from '../../lib/customerTracking';
 
 export const finalizeService = {
   /**
@@ -161,6 +162,39 @@ export const finalizeService = {
       await notifyCompletion(doc!, signedKey).catch((err) => {
         logger.error({ err, documentId }, 'Failed to send completion emails');
       });
+
+      void (async () => {
+        try {
+          const recipients = await db.selectAll(
+            'tbl_sign_recipient',
+            'email, name',
+            'documentId = ?',
+            [documentId]
+          );
+          for (const r of recipients as any[]) {
+            const contactId = await upsertContact({
+              email: r.email,
+              name: r.name,
+              source: 'esign',
+            });
+            if (contactId) {
+              await recordCustomerEvent({
+                type: 'esign_completed',
+                userId: doc!.ownerId,
+                contactId,
+                meta: { documentId },
+              });
+            }
+          }
+          await recordCustomerEvent({
+            type: 'esign_completed',
+            userId: doc!.ownerId,
+            meta: { documentId, version, sha256 },
+          });
+        } catch (err) {
+          logger.warn({ err, documentId }, 'Failed to record esign_completed tracking');
+        }
+      })();
 
       logger.info({ documentId, version, sha256, digitallySigned, tsaTimestamp }, 'Document finalized');
       return { version, sha256 };

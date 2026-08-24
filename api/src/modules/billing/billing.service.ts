@@ -4,6 +4,8 @@ import { AppError } from '../../middleware/errorHandler.middleware';
 import { env } from '../../config/env';
 import { CheckoutInput } from './billing.types';
 import crypto from 'crypto';
+import { recordCustomerEvent } from '../../lib/customerTracking';
+import { logger } from '../../lib/logger';
 
 export const billingService = {
   async createCheckout(userId: string, input: CheckoutInput) {
@@ -81,6 +83,12 @@ export const billingService = {
         'userId = ?',
         [userId]
       );
+
+      void recordCustomerEvent({
+        userId,
+        type: 'checkout_started',
+        meta: { planId, subscriptionId: subscription.id },
+      }).catch((err) => logger.warn({ err, userId }, 'Failed to record checkout_started'));
 
       return {
         subscriptionId: subscription.id,

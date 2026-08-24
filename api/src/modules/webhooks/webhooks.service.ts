@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { invalidateUser } from '../../lib/userCache';
 import { AppError } from '../../middleware/errorHandler.middleware';
+import { recordCustomerEvent } from '../../lib/customerTracking';
 
 export const webhooksService = {
   async handleRazorpayWebhook(rawBody: string, signature: string) {
@@ -92,6 +93,13 @@ export const webhooksService = {
             await db.commit(conn);
             await invalidateUser(dbSub.userId);
             logger.info({ userId: dbSub.userId }, 'User upgraded to PRO plan via webhook');
+            void recordCustomerEvent({
+              userId: dbSub.userId,
+              type: 'subscription_active',
+              meta: { subId, eventName, plan: 'PRO' },
+            }).catch((err) =>
+              logger.warn({ err, userId: dbSub.userId }, 'Failed to record subscription_active event')
+            );
           } catch (err) {
             await db.rollback(conn);
             logger.error({ err, subId }, 'Transaction failed for subscription activation');

@@ -17,5 +17,7 @@ router.post('/organizations', adminController.provision);
 router.get('/organizations/:id', adminController.getOrganization);
 router.patch('/organizations/:id', adminController.patchOrganization);
 router.get('/organizations/:id/audit', adminController.getAudit);
+router.get('/customers', adminController.listCustomers);
+router.get('/customers/:id', adminController.getCustomer);
 
 export default router;

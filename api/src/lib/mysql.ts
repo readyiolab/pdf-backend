@@ -5,6 +5,7 @@ import { initializeSigningSchema } from './signingSchema';
 import { initializeByocSchema } from './byocSchema';
 import { initializeLetterSchema } from './letterSchema';
 import { initializeDiagramSchema } from './diagramSchema';
+import { initializeCustomerTrackingSchema } from './customerTrackingSchema';
 import { seedPlatformAdmin } from './seedPlatformAdmin';
 import { db } from './database';
 
@@ -125,6 +126,7 @@ async function initializeDatabase(dbPool: Pool): Promise<void> {
     // Letter Studio depends on tbl_organization from BYOC schema above.
     await initializeLetterSchema(conn);
     await initializeDiagramSchema(conn);
+    await initializeCustomerTrackingSchema(conn);
     await seedPlatformAdmin(conn);
 
     logger.info('Prefixed database tables (tbl_) initialization complete.');

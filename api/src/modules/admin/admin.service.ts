@@ -298,4 +298,210 @@ export const adminService = {
 
     return this.getOrganization(id);
   },
+
+  async listCustomers(filters: {
+    repeat?: 'first' | 'repeat' | 'all';
+    channel?: string;
+    campaign?: string;
+    from?: string;
+    to?: string;
+    q?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, Number(filters.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(filters.limit) || 50));
+    const offset = (page - 1) * limit;
+    const where: string[] = ['u.isGuest = 0'];
+    const params: unknown[] = [];
+
+    if (filters.channel && filters.channel !== 'all') {
+      where.push('COALESCE(a.acquisitionChannel, ?) = ?');
+      params.push('unknown', filters.channel);
+    }
+    if (filters.campaign) {
+      where.push('(a.firstUtmCampaign = ? OR a.lastUtmCampaign = ?)');
+      params.push(filters.campaign, filters.campaign);
+    }
+    if (filters.from) {
+      where.push('u.createdAt >= ?');
+      params.push(new Date(filters.from));
+    }
+    if (filters.to) {
+      where.push('u.createdAt <= ?');
+      params.push(new Date(filters.to));
+    }
+    if (filters.q) {
+      where.push('(u.email LIKE ? OR u.name LIKE ?)');
+      const like = `%${filters.q.trim()}%`;
+      params.push(like, like);
+    }
+    if (filters.repeat === 'repeat') {
+      where.push(`(
+        (SELECT COUNT(*) FROM tbl_customer_event e WHERE e.userId = u.id AND e.type = 'login') >= 2
+        OR (SELECT COUNT(*) FROM tbl_customer_event e WHERE e.userId = u.id AND e.type = 'subscription_active') >= 1
+        OR (SELECT COUNT(DISTINCT DATE(e.createdAt)) FROM tbl_customer_event e
+              WHERE e.userId = u.id AND e.type IN ('job_completed','letter_sent','esign_completed')) >= 2
+      )`);
+    } else if (filters.repeat === 'first') {
+      where.push(`(
+        (SELECT COUNT(*) FROM tbl_customer_event e WHERE e.userId = u.id AND e.type = 'login') < 2
+        AND (SELECT COUNT(*) FROM tbl_customer_event e WHERE e.userId = u.id AND e.type = 'subscription_active') = 0
+        AND (SELECT COUNT(DISTINCT DATE(e.createdAt)) FROM tbl_customer_event e
+              WHERE e.userId = u.id AND e.type IN ('job_completed','letter_sent','esign_completed')) < 2
+      )`);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const rows = await db.queryAll<any>(
+      `SELECT u.id, u.email, u.name, u.plan, u.createdAt,
+              a.acquisitionChannel, a.visitorId,
+              a.firstUtmSource, a.firstUtmMedium, a.firstUtmCampaign,
+              a.lastUtmSource, a.lastUtmMedium, a.lastUtmCampaign,
+              a.firstVisitAt, a.signupAt, a.lastSeenAt, a.lastLoginAt,
+              p.phone, p.company, p.addressLine1, p.addressLine2, p.city, p.state, p.postalCode, p.country,
+              (SELECT COUNT(*) FROM tbl_customer_event e WHERE e.userId = u.id) AS eventCount,
+              (SELECT COUNT(*) FROM tbl_customer_event e WHERE e.userId = u.id AND e.type = 'login') AS loginCount,
+              (SELECT COUNT(*) FROM tbl_customer_event e WHERE e.userId = u.id AND e.type = 'subscription_active') AS paidCount,
+              (SELECT COUNT(DISTINCT DATE(e.createdAt)) FROM tbl_customer_event e
+                WHERE e.userId = u.id AND e.type IN ('job_completed','letter_sent','esign_completed')) AS activityDays
+         FROM tbl_user u
+         LEFT JOIN tbl_user_attribution a ON a.userId = u.id
+         LEFT JOIN tbl_user_profile p ON p.userId = u.id
+         ${whereSql}
+         ORDER BY COALESCE(a.lastSeenAt, u.createdAt) DESC
+         LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    const countRows = await db.queryAll<any>(
+      `SELECT COUNT(*) AS cnt
+         FROM tbl_user u
+         LEFT JOIN tbl_user_attribution a ON a.userId = u.id
+         ${whereSql}`,
+      params
+    );
+    const total = Number(countRows[0]?.cnt || 0);
+
+    let customers = rows.map((r) => {
+      const loginCount = Number(r.loginCount || 0);
+      const paidCount = Number(r.paidCount || 0);
+      const activityDays = Number(r.activityDays || 0);
+      const isRepeat = loginCount >= 2 || paidCount >= 1 || activityDays >= 2;
+      return {
+        id: r.id,
+        email: r.email,
+        name: r.name,
+        plan: r.plan,
+        createdAt: r.createdAt,
+        channel: r.acquisitionChannel || 'unknown',
+        firstTouch: {
+          source: r.firstUtmSource,
+          medium: r.firstUtmMedium,
+          campaign: r.firstUtmCampaign,
+        },
+        lastTouch: {
+          source: r.lastUtmSource,
+          medium: r.lastUtmMedium,
+          campaign: r.lastUtmCampaign,
+        },
+        firstSeenAt: r.firstVisitAt || r.createdAt,
+        lastSeenAt: r.lastSeenAt || r.createdAt,
+        signupAt: r.signupAt || r.createdAt,
+        address:
+          r.addressLine1 || r.city
+            ? {
+                line1: r.addressLine1,
+                line2: r.addressLine2,
+                city: r.city,
+                state: r.state,
+                postalCode: r.postalCode,
+                country: r.country,
+              }
+            : null,
+        phone: r.phone || null,
+        company: r.company || null,
+        eventCount: Number(r.eventCount || 0),
+        isRepeat,
+        customerType: isRepeat ? 'repeat' : 'first',
+      };
+    });
+
+    return { customers, page, limit, total };
+  },
+
+  async getCustomer(userId: string) {
+    const user = await db.select(
+      'tbl_user',
+      'id, email, name, plan, createdAt, organizationId',
+      'id = ? AND isGuest = 0',
+      [userId]
+    );
+    if (!user) throw new AppError('Customer not found', 404);
+
+    const attribution = await db.select('tbl_user_attribution', '*', 'userId = ?', [userId]);
+    const profile = await db.select('tbl_user_profile', '*', 'userId = ?', [userId]);
+    const events = await db.queryAll<any>(
+      `SELECT id, type, contactId, visitorId, metaJson, createdAt
+         FROM tbl_customer_event
+        WHERE userId = ?
+        ORDER BY createdAt DESC
+        LIMIT 200`,
+      [userId]
+    );
+    const contacts = await db.queryAll<any>(
+      `SELECT id, email, name, isRepeat, source, firstSeenAt, lastSeenAt
+         FROM tbl_contact
+        WHERE userId = ?
+        ORDER BY lastSeenAt DESC
+        LIMIT 50`,
+      [userId]
+    );
+
+    const loginCount = events.filter((e) => e.type === 'login').length;
+    const paidCount = events.filter((e) => e.type === 'subscription_active').length;
+    const activityDays = new Set(
+      events
+        .filter((e) =>
+          ['job_completed', 'letter_sent', 'esign_completed'].includes(e.type)
+        )
+        .map((e) => String(e.createdAt).slice(0, 10))
+    ).size;
+    const isRepeat = loginCount >= 2 || paidCount >= 1 || activityDays >= 2;
+
+    const timeline = events.map((e) => ({
+      id: e.id,
+      type: e.type,
+      contactId: e.contactId,
+      visitorId: e.visitorId,
+      meta:
+        typeof e.metaJson === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(e.metaJson);
+              } catch {
+                return null;
+              }
+            })()
+          : e.metaJson,
+      createdAt: e.createdAt,
+    }));
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        plan: user.plan,
+        createdAt: user.createdAt,
+        organizationId: user.organizationId,
+      },
+      attribution: attribution || null,
+      profile: profile || null,
+      isRepeat,
+      customerType: isRepeat ? 'repeat' : 'first',
+      contacts,
+      timeline,
+    };
+  },
 };
