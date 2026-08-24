@@ -145,6 +145,8 @@ function platformClient(): ResolvedClient {
         secretAccessKey: env.DO_SPACES_SECRET,
       },
       forcePathStyle: false,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     }),
   };
 }
@@ -210,6 +212,8 @@ function buildS3(
       endpoint: endpoint || undefined,
       forcePathStyle,
       credentials: { accessKeyId, secretAccessKey },
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     }),
   };
 }

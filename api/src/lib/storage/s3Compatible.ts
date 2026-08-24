@@ -56,6 +56,11 @@ export function createS3Client(opts: {
       accessKeyId: opts.accessKeyId,
       secretAccessKey: opts.secretAccessKey,
     },
+    // AWS SDK ≥3.729 injects CRC32 into PutObject by default. That gets hoisted
+    // into presigned URLs (x-amz-checksum-crc32=AAAAAA==) which browsers never
+    // send — Spaces/R2/MinIO then struggle, and uploads look "stuck" for MBs.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   });
 }
 
