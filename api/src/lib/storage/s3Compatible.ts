@@ -48,7 +48,7 @@ export function createS3Client(opts: {
   secretAccessKey: string;
   forcePathStyle?: boolean;
 }): S3Client {
-  return new S3Client({
+  const client = new S3Client({
     region: opts.region || 'us-east-1',
     endpoint: opts.endpoint || undefined,
     forcePathStyle: opts.forcePathStyle ?? Boolean(opts.endpoint),
@@ -58,10 +58,33 @@ export function createS3Client(opts: {
     },
     // AWS SDK ≥3.729 injects CRC32 into PutObject by default. That gets hoisted
     // into presigned URLs (x-amz-checksum-crc32=AAAAAA==) which browsers never
-    // send — Spaces/R2/MinIO then struggle, and uploads look "stuck" for MBs.
+    // send — Spaces then hangs until the browser XHR times out.
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
-  });
+  } as any);
+
+  // Belt-and-suspenders: strip flexible-checksum headers before the request is signed.
+  client.middlewareStack.add(
+    (next) => async (args) => {
+      const req = args.request as { headers?: Record<string, string> };
+      if (req?.headers) {
+        for (const key of Object.keys(req.headers)) {
+          const lower = key.toLowerCase();
+          if (
+            lower.startsWith('x-amz-checksum-') ||
+            lower === 'x-amz-sdk-checksum-algorithm' ||
+            lower === 'x-amz-trailer'
+          ) {
+            delete req.headers[key];
+          }
+        }
+      }
+      return next(args);
+    },
+    { step: 'build', name: 'stripFlexibleChecksumsForSpaces', priority: 'low' }
+  );
+
+  return client;
 }
 
 export class S3CompatibleStorageProvider implements StorageProvider {
@@ -72,11 +95,27 @@ export class S3CompatibleStorageProvider implements StorageProvider {
   ) {}
 
   async presignPut(key: string, contentType: string, ttlSeconds: number): Promise<string> {
-    return getSignedUrl(
+    const url = await getSignedUrl(
       this.client,
-      new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: contentType }),
-      { expiresIn: ttlSeconds }
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentType: contentType,
+      }),
+      {
+        expiresIn: ttlSeconds,
+        // Keep content-type in the signature so the browser PUT must match.
+        signableHeaders: new Set(['content-type']),
+      }
     );
+    // Guard: if a future SDK still injects checksums, fail loud in logs rather
+    // than hand the browser a URL that will hang until timeout.
+    if (/x-amz-checksum|x-amz-sdk-checksum/i.test(url)) {
+      throw new Error(
+        'Presigned PUT URL unexpectedly contains checksum parameters (AWS SDK flexible checksums). Disable requestChecksumCalculation.'
+      );
+    }
+    return url;
   }
 
   async presignGet(
