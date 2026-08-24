@@ -6,8 +6,12 @@ import { subscribeJob } from '../../lib/queueEvents';
 export const jobsController = {
   async createJob(req: Request, res: Response, next: NextFunction) {
     try {
-      const { id: userId } = req.user;
-      const job = await jobsService.createJob(userId, req.body);
+      const { id: userId, plan, organizationId, storageBindingId } = req.user;
+      const job = await jobsService.createJob(userId, req.body, {
+        plan,
+        organizationId,
+        storageBindingId,
+      });
       
       res.status(201).json({ job });
     } catch (err) {

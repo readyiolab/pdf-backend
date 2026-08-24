@@ -106,6 +106,15 @@ export async function readObjectHead(
   return storage.readHead(key, bytes);
 }
 
+export async function readObjectHeadWithSize(
+  key: string,
+  bytes = 1024,
+  bindingId?: string | null
+): Promise<{ bytes: Buffer; size: number }> {
+  const storage = await resolve(key, bindingId);
+  return storage.readHeadWithSize(key, bytes);
+}
+
 export async function getObjectBytes(
   key: string,
   bindingId?: string | null

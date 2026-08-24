@@ -9,9 +9,19 @@ import {
   ListObjectsV2Command,
   HeadBucketCommand,
   GetBucketCorsCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import type { CorsCheckResult, StorageProvider, StorageProviderKind } from './types';
+import type {
+  CorsCheckResult,
+  MultipartPart,
+  ObjectHeadProbe,
+  StorageProvider,
+  StorageProviderKind,
+} from './types';
 
 export function requiredS3CorsConfig(appOrigin: string): string {
   return JSON.stringify(
@@ -98,6 +108,11 @@ export class S3CompatibleStorageProvider implements StorageProvider {
   }
 
   async readHead(key: string, bytes = 1024): Promise<Buffer> {
+    const { bytes: head } = await this.readHeadWithSize(key, bytes);
+    return head;
+  }
+
+  async readHeadWithSize(key: string, bytes = 1024): Promise<ObjectHeadProbe> {
     const res = await this.client.send(
       new GetObjectCommand({
         Bucket: this.bucket,
@@ -105,7 +120,9 @@ export class S3CompatibleStorageProvider implements StorageProvider {
         Range: `bytes=0-${bytes - 1}`,
       })
     );
-    return streamToBuffer(res.Body as AsyncIterable<Buffer>);
+    const head = await streamToBuffer(res.Body as AsyncIterable<Buffer>);
+    const size = parseSizeFromContentRange(res.ContentRange) ?? res.ContentLength ?? head.length;
+    return { bytes: head, size };
   }
 
   async getObjectBytes(key: string): Promise<Buffer> {
@@ -151,6 +168,70 @@ export class S3CompatibleStorageProvider implements StorageProvider {
         )
         .catch(() => undefined);
     }
+  }
+
+  async createMultipartUpload(key: string, contentType: string): Promise<string> {
+    const res = await this.client.send(
+      new CreateMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentType: contentType,
+      })
+    );
+    if (!res.UploadId) {
+      throw new Error('CreateMultipartUpload did not return an UploadId');
+    }
+    return res.UploadId;
+  }
+
+  async presignUploadPart(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    ttlSeconds: number
+  ): Promise<string> {
+    return getSignedUrl(
+      this.client,
+      new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+      }),
+      { expiresIn: ttlSeconds }
+    );
+  }
+
+  async completeMultipartUpload(
+    key: string,
+    uploadId: string,
+    parts: MultipartPart[]
+  ): Promise<void> {
+    await this.client.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: parts
+            .slice()
+            .sort((a, b) => a.partNumber - b.partNumber)
+            .map((p) => ({ ETag: p.etag, PartNumber: p.partNumber })),
+        },
+      })
+    );
+  }
+
+  async abortMultipartUpload(key: string, uploadId: string): Promise<void> {
+    await this.client
+      .send(
+        new AbortMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: key,
+          UploadId: uploadId,
+        })
+      )
+      .catch(() => undefined);
   }
 
   async ensureAccessible(): Promise<void> {
@@ -223,4 +304,13 @@ async function streamToBuffer(body: AsyncIterable<Buffer> | undefined): Promise<
     chunks.push(Buffer.from(chunk));
   }
   return Buffer.concat(chunks);
+}
+
+/** Parse "bytes 0-1023/12345678" → 12345678 */
+function parseSizeFromContentRange(contentRange?: string): number | null {
+  if (!contentRange) return null;
+  const match = /\/(\d+)\s*$/.exec(contentRange);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
 }

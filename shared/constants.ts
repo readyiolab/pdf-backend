@@ -23,8 +23,8 @@ export const TOOL_INPUT_TYPES: Record<ToolName, FileCategory[]> = {
   ocr: ['pdf', 'image'],
 };
 
-export const HEAVY_TOOLS: ToolName[] = ['compress', 'officeConvert', 'ocr'];
-export const LIGHT_TOOLS: ToolName[] = ['merge', 'split', 'jpgToPdf', 'pdfToJpg', 'rotate', 'watermark', 'protect'];
+export const HEAVY_TOOLS: ToolName[] = ['compress', 'officeConvert', 'ocr', 'merge', 'pdfToJpg'];
+export const LIGHT_TOOLS: ToolName[] = ['split', 'jpgToPdf', 'rotate', 'watermark', 'protect'];
 
 export interface PlanLimits {
   maxDailyOps: number;
@@ -98,5 +98,9 @@ export const PLAN_LIMITS: Record<'FREE' | 'PRO' | 'ENTERPRISE', PlanLimits> = {
 export const LETTER_GENERATE_QUEUE = 'letter-generate';
 export const LETTER_PARSE_QUEUE = 'letter-parse';
 export const LETTER_SEND_QUEUE = 'letter-send';
+/** Background ZIP of batch letter PDFs (avoids streaming all objects through the API). */
+export const LETTER_ZIP_QUEUE = 'letter-zip';
+/** Offload AI PDF text extraction from the API process. */
+export const AI_EXTRACT_QUEUE = 'ai-extract';
 
 export const SUPPORTED_TOOLS: ToolName[] = [...HEAVY_TOOLS, ...LIGHT_TOOLS];

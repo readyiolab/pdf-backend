@@ -1,11 +1,33 @@
-import { Response } from 'express';
-import archiver from 'archiver';
 import { db } from '../../lib/mysql';
 import { orgScope } from './orgScope';
 import { batchService } from './batch.service';
-import { getStorageForUser } from '../../lib/storage';
+import { getStorageForUser, resolveUserStorageContext } from '../../lib/storage';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { logger } from '../../lib/logger';
+import { redis } from '../../lib/redis';
+import { enqueueLetterZip } from '../../lib/letterQueues';
+import crypto from 'crypto';
+
+const ZIP_STATUS_PREFIX = 'letter:zip:';
+const ZIP_STATUS_TTL = 60 * 60; // 1 hour
+
+export type LetterZipStatus = {
+  status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  zipKey?: string;
+  error?: string;
+  batchId: string;
+  organizationId: string;
+  userId: string;
+};
+
+export async function setLetterZipStatus(jobId: string, data: LetterZipStatus): Promise<void> {
+  await redis.set(`${ZIP_STATUS_PREFIX}${jobId}`, JSON.stringify(data), 'EX', ZIP_STATUS_TTL);
+}
+
+export async function getLetterZipStatusRaw(jobId: string): Promise<LetterZipStatus | null> {
+  const raw = await redis.get(`${ZIP_STATUS_PREFIX}${jobId}`);
+  return raw ? (JSON.parse(raw) as LetterZipStatus) : null;
+}
 
 export const historyService = {
   async listBatches(organizationId: string) {
@@ -119,55 +141,69 @@ export const historyService = {
     });
   },
 
-  async streamPdfsZip(
-    organizationId: string,
-    userId: string,
-    batchId: string,
-    res: Response
-  ): Promise<void> {
+  /**
+   * Enqueue a background ZIP of all batch PDFs. The ZIP is built in the worker
+   * process and uploaded to storage; clients poll getPdfsZipStatus for a
+   * short-lived download URL.
+   */
+  async enqueuePdfsZip(organizationId: string, userId: string, batchId: string) {
     await batchService.get(organizationId, batchId);
     const rows = await db.queryAll<any>(
-      `SELECT id, pdfKey, pdfFileName FROM tbl_letter_batch_employee
+      `SELECT id FROM tbl_letter_batch_employee
         WHERE batchId = ? AND pdfKey IS NOT NULL AND pdfKey <> ''
-        ORDER BY rowIndex ASC`,
+        LIMIT 1`,
       [batchId]
     );
     if (!rows.length) {
       throw new AppError('No PDFs are ready to download for this batch yet.', 404);
     }
 
-    const { storage } = await getStorageForUser(userId);
-    const archive = archiver('zip', { zlib: { level: 1 } });
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="letters-${batchId.slice(0, 8)}.zip"`
-    );
-    res.setHeader('Cache-Control', 'no-store');
-
-    archive.on('error', (err) => {
-      if (!res.headersSent) {
-        res.status(500).json({ message: err.message });
-      } else {
-        res.end();
-      }
+    const { storageBindingId } = await resolveUserStorageContext(userId);
+    const zipJobId = crypto.randomUUID();
+    await setLetterZipStatus(zipJobId, {
+      status: 'QUEUED',
+      batchId,
+      organizationId,
+      userId,
     });
-    archive.pipe(res);
 
-    const usedNames = new Set<string>();
-    for (const row of rows) {
-      const bytes = await storage.getObjectBytes(row.pdfKey);
-      let name = String(row.pdfFileName || `${row.id}.pdf`).replace(/[\\/]/g, '_');
-      if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
-      if (usedNames.has(name)) {
-        name = `${row.id.slice(0, 8)}_${name}`;
-      }
-      usedNames.add(name);
-      archive.append(bytes, { name });
+    await enqueueLetterZip({
+      zipJobId,
+      batchId,
+      organizationId,
+      userId,
+      storageBindingId: storageBindingId ?? null,
+    });
+
+    return { zipJobId, status: 'QUEUED' as const };
+  },
+
+  async getPdfsZipStatus(organizationId: string, userId: string, zipJobId: string) {
+    const state = await getLetterZipStatusRaw(zipJobId);
+    if (!state || state.organizationId !== organizationId || state.userId !== userId) {
+      throw new AppError('ZIP job not found', 404);
     }
 
-    await archive.finalize();
+    if (state.status === 'FAILED') {
+      return { status: 'FAILED' as const, error: state.error || 'ZIP failed' };
+    }
+    if (state.status !== 'COMPLETED' || !state.zipKey) {
+      return { status: state.status };
+    }
+
+    const { storage } = await getStorageForUser(userId);
+    const url = await storage.presignGet(state.zipKey, {
+      ttlSeconds: 300,
+      fileName: `letters-${state.batchId.slice(0, 8)}.zip`,
+      disposition: 'attachment',
+      contentType: 'application/zip',
+    });
+    return {
+      status: 'COMPLETED' as const,
+      url,
+      expiresInSeconds: 300,
+      fileName: `letters-${state.batchId.slice(0, 8)}.zip`,
+    };
   },
 
   async presignEmployeePdf(

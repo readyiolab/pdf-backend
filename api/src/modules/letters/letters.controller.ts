@@ -449,11 +449,24 @@ export const lettersController = {
   },
   async downloadPdfsZip(req: Request, res: Response, next: NextFunction) {
     try {
-      await historyService.streamPdfsZip(
+      const result = await historyService.enqueuePdfsZip(
         req.orgContext!.organizationId,
         req.user.id,
-        req.params.batchId,
-        res
+        req.params.batchId
+      );
+      res.status(202).json(result);
+    } catch (e) {
+      next(e);
+    }
+  },
+  async downloadPdfsZipStatus(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.json(
+        await historyService.getPdfsZipStatus(
+          req.orgContext!.organizationId,
+          req.user.id,
+          req.params.zipJobId
+        )
       );
     } catch (e) {
       next(e);

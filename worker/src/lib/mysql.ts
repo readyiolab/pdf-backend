@@ -52,7 +52,7 @@ export class Database {
       database: env.DB_NAME,
       waitForConnections: true,
       connectionLimit: env.DB_CONNECTION_LIMIT,
-      queueLimit: 0,
+      queueLimit: 200,
       timezone: 'Z',
       multipleStatements: false,
       enableKeepAlive: true,

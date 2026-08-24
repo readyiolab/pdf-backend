@@ -28,19 +28,36 @@ import { ocrProcessor } from '../processors/ocr.processor';
 async function scanInputs(jobId: string, inputFiles: string[]): Promise<void> {
   if (!env.CLAMAV_ENABLED) return;
 
-  for (const key of inputFiles) {
-    let localPath = '';
-    try {
-      localPath = await downloadFromS3(key);
-      const result = await scanFile(localPath);
-      if (!result.clean) {
-        logger.warn({ jobId, key, signature: result.signature }, 'Malware detected in upload');
-        throw new Error('Uploaded file failed the security scan and was rejected.');
+  const SCAN_CONCURRENCY = 4;
+  let nextIdx = 0;
+  let firstError: Error | null = null;
+
+  await Promise.all(
+    Array.from({ length: Math.min(SCAN_CONCURRENCY, inputFiles.length) }, async () => {
+      while (nextIdx < inputFiles.length) {
+        if (firstError) return;
+        const i = nextIdx++;
+        const key = inputFiles[i];
+        let localPath = '';
+        try {
+          localPath = await downloadFromS3(key);
+          const result = await scanFile(localPath);
+          if (!result.clean) {
+            logger.warn({ jobId, key, signature: result.signature }, 'Malware detected in upload');
+            firstError = new Error('Uploaded file failed the security scan and was rejected.');
+            return;
+          }
+        } catch (err: any) {
+          firstError = err instanceof Error ? err : new Error(String(err));
+          return;
+        } finally {
+          if (localPath) cleanupLocalFile(localPath);
+        }
       }
-    } finally {
-      if (localPath) cleanupLocalFile(localPath);
-    }
-  }
+    })
+  );
+
+  if (firstError) throw firstError;
 }
 
 export async function jobRouter(job: Job<JobPayload>): Promise<void> {

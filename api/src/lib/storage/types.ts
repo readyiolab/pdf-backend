@@ -50,6 +50,17 @@ export interface CorsCheckResult {
   requiredConfig: string;
 }
 
+export interface MultipartPart {
+  partNumber: number;
+  etag: string;
+}
+
+export interface ObjectHeadProbe {
+  bytes: Buffer;
+  /** Full object size in bytes when the provider reports it (Content-Range / properties). */
+  size: number;
+}
+
 export interface StorageProvider {
   readonly kind: StorageProviderKind;
   readonly bucket: string;
@@ -66,11 +77,33 @@ export interface StorageProvider {
   ): Promise<string>;
   headSize(key: string): Promise<number>;
   readHead(key: string, bytes?: number): Promise<Buffer>;
+  /**
+   * Single ranged GET that returns magic bytes + full object size (avoids HEAD + Range).
+   */
+  readHeadWithSize(key: string, bytes?: number): Promise<ObjectHeadProbe>;
   getObjectBytes(key: string): Promise<Buffer>;
   putObject(key: string, body: Buffer, contentType?: string): Promise<void>;
   copyObject(sourceKey: string, destKey: string): Promise<void>;
   deleteObject(key: string): Promise<void>;
   deleteObjects(keys: string[]): Promise<void>;
+
+  /** Start a multipart / block upload. Returns provider upload id. */
+  createMultipartUpload(key: string, contentType: string): Promise<string>;
+  /** Presign a single part PUT (S3 UploadPart or Azure stage-block). */
+  presignUploadPart(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    ttlSeconds: number
+  ): Promise<string>;
+  completeMultipartUpload(
+    key: string,
+    uploadId: string,
+    parts: MultipartPart[],
+    contentType?: string
+  ): Promise<void>;
+  abortMultipartUpload(key: string, uploadId: string): Promise<void>;
+
   /** Health check used by Test Connection. */
   ensureAccessible(): Promise<void>;
   /**

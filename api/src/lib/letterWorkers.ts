@@ -23,6 +23,26 @@ function parseJson<T>(value: unknown, fallback: T): T {
   }
 }
 
+/** Batch-load employees for a generate/send chunk — avoids N+1 SELECTs. */
+async function loadEmployeesByIds(
+  batchId: string,
+  employeeIds: string[]
+): Promise<Map<string, any>> {
+  const map = new Map<string, any>();
+  if (!employeeIds.length) return map;
+  const placeholders = employeeIds.map(() => '?').join(',');
+  const rows = await db.selectAll(
+    'tbl_letter_batch_employee',
+    '*',
+    `batchId = ? AND id IN (${placeholders})`,
+    [batchId, ...employeeIds]
+  );
+  for (const row of rows) {
+    map.set(String(row.id), row);
+  }
+  return map;
+}
+
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -261,11 +281,10 @@ async function processGenerateChunk(job: Job<LetterGenerateJob>) {
   try {
     browser = await launchChromeBrowser();
 
+    const employees = await loadEmployeesByIds(batchId, employeeIds);
+
     for (const employeeId of employeeIds) {
-      const emp = await db.select('tbl_letter_batch_employee', '*', 'id = ? AND batchId = ?', [
-        employeeId,
-        batchId,
-      ]);
+      const emp = employees.get(employeeId);
       if (!emp) continue;
       if (!['READY', 'WARNING'].includes(emp.validationStatus)) continue;
 
@@ -459,12 +478,11 @@ async function processSendChunk(job: Job<LetterSendJob>) {
   }
   const { storage } = await getStorageForUser(userId);
 
+  const employees = await loadEmployeesByIds(batchId, employeeIds);
+
   let sent = 0;
   for (const employeeId of employeeIds) {
-    const emp = await db.select('tbl_letter_batch_employee', '*', 'id = ? AND batchId = ?', [
-      employeeId,
-      batchId,
-    ]);
+    const emp = employees.get(employeeId);
     if (!emp?.pdfKey) continue;
     const data = parseJson<Record<string, string>>(emp.employeeDataJson, {});
     const to = String(data.Employee_Email || '').trim();

@@ -4,9 +4,16 @@ import {
   BlobSASPermissions,
   generateBlobSASQueryParameters,
   ContainerClient,
+  BlockBlobClient,
 } from '@azure/storage-blob';
-import type { CorsCheckResult, StorageProvider } from './types';
+import crypto from 'crypto';
+import type { CorsCheckResult, MultipartPart, ObjectHeadProbe, StorageProvider } from './types';
 import { AppError } from '../../middleware/errorHandler.middleware';
+
+/** Azure block IDs must be base64 and uniform length — pad part number to 6 digits. */
+function azureBlockId(partNumber: number): string {
+  return Buffer.from(String(partNumber).padStart(6, '0')).toString('base64');
+}
 
 export function requiredAzureCorsConfig(appOrigin: string): string {
   return JSON.stringify(
@@ -107,8 +114,17 @@ export class AzureBlobStorageProvider implements StorageProvider {
   }
 
   async readHead(key: string, bytes = 1024): Promise<Buffer> {
-    const download = await this.container.getBlobClient(key).download(0, bytes);
-    return streamToBuffer(download.readableStreamBody);
+    const { bytes: head } = await this.readHeadWithSize(key, bytes);
+    return head;
+  }
+
+  async readHeadWithSize(key: string, bytes = 1024): Promise<ObjectHeadProbe> {
+    const blob = this.container.getBlobClient(key);
+    const props = await blob.getProperties();
+    const size = props.contentLength ?? 0;
+    const download = await blob.download(0, Math.min(bytes, size || bytes));
+    const head = await streamToBuffer(download.readableStreamBody);
+    return { bytes: head, size };
   }
 
   async getObjectBytes(key: string): Promise<Buffer> {
@@ -134,6 +150,48 @@ export class AzureBlobStorageProvider implements StorageProvider {
 
   async deleteObjects(keys: string[]): Promise<void> {
     await Promise.all(keys.map((k) => this.deleteObject(k)));
+  }
+
+  /**
+   * Azure has no S3-style multipart upload id. We mint a session id and stash
+   * content-type in Redis-less memory is not shared — contentType is passed again
+   * on complete. The uploadId is opaque to the client and only used for abort logging.
+   */
+  async createMultipartUpload(_key: string, _contentType: string): Promise<string> {
+    return `azure-${crypto.randomUUID()}`;
+  }
+
+  async presignUploadPart(
+    key: string,
+    _uploadId: string,
+    partNumber: number,
+    ttlSeconds: number
+  ): Promise<string> {
+    const blockId = encodeURIComponent(azureBlockId(partNumber));
+    const base = this.sasUrl(key, 'cw', ttlSeconds);
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}comp=block&blockid=${blockId}`;
+  }
+
+  async completeMultipartUpload(
+    key: string,
+    _uploadId: string,
+    parts: MultipartPart[],
+    contentType?: string
+  ): Promise<void> {
+    const blockBlob: BlockBlobClient = this.container.getBlockBlobClient(key);
+    const blockIds = parts
+      .slice()
+      .sort((a, b) => a.partNumber - b.partNumber)
+      .map((p) => azureBlockId(p.partNumber));
+    await blockBlob.commitBlockList(blockIds, {
+      blobHTTPHeaders: contentType ? { blobContentType: contentType } : undefined,
+    });
+  }
+
+  async abortMultipartUpload(key: string, _uploadId: string): Promise<void> {
+    // Uncommitted blocks are garbage-collected by Azure; delete blob if partially created.
+    await this.deleteObject(key);
   }
 
   async ensureAccessible(): Promise<void> {

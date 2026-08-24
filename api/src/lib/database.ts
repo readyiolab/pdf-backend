@@ -56,7 +56,8 @@ export class Database {
       database: env.DB_NAME,
       waitForConnections: true,
       connectionLimit: poolLimit,
-      queueLimit: 0,
+      // Finite queue so burst load fails fast instead of unbounded waiter growth.
+      queueLimit: env.DB_QUEUE_LIMIT ?? 200,
       timezone: 'Z',
       multipleStatements: false,
       enableKeepAlive: true,

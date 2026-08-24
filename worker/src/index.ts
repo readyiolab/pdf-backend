@@ -4,6 +4,11 @@ import { logger } from './lib/logger';
 import { startHeavyWorker } from './queue/heavyQueue.worker';
 import { startLightWorker } from './queue/lightQueue.worker';
 import { startMaintenanceWorker } from './queue/maintenance.worker';
+import {
+  startLetterZipWorker,
+  startAiExtractWorker,
+  stopAuxWorkers,
+} from './queue/auxWorkers';
 import { redis } from './lib/redis';
 import { createMysqlPool, db } from './lib/mysql';
 import { startWorkerStorageCacheSubscriber } from './storage/s3';
@@ -13,6 +18,8 @@ logger.info('Initializing Worker Service...');
 let heavyWorker: any;
 let lightWorker: any;
 let maintenanceWorker: any;
+let letterZipWorker: any;
+let aiExtractWorker: any;
 let server: any;
 
 // Spin up a minimal Express server for container/health checks
@@ -72,6 +79,9 @@ const gracefulShutdown = async () => {
     logger.info('Maintenance worker closed.');
   }
 
+  await stopAuxWorkers();
+  logger.info('Aux workers closed.');
+
   // Disconnect Redis
   await redis.quit();
   logger.info('Redis connection closed.');
@@ -102,6 +112,8 @@ async function bootstrap() {
     heavyWorker = startHeavyWorker();
     lightWorker = startLightWorker();
     maintenanceWorker = await startMaintenanceWorker();
+    letterZipWorker = startLetterZipWorker();
+    aiExtractWorker = startAiExtractWorker();
 
     // 3. Start health check listener
     server = app.listen(env.PORT, () => {

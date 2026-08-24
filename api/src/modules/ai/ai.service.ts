@@ -1,27 +1,28 @@
 import crypto from 'crypto';
-import { getObjectBytes, headObjectSize, readObjectHead } from '../../lib/s3';
+import { QueueEvents } from 'bullmq';
+import { readObjectHeadWithSize } from '../../lib/s3';
 import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { redis } from '../../lib/redis';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { detectFileCategory } from '../../../../shared/fileType';
-import { PLAN_LIMITS } from '../../../../shared/constants';
+import { PLAN_LIMITS, AI_EXTRACT_QUEUE } from '../../../../shared/constants';
 import { getAiProvider, isAiConfigured, type AiMessage } from '../../lib/ai/provider';
-import { extractPdfText, assertHasText } from '../../lib/pdfText';
 import type { ChatInput, ExplainInput, SummarizeInput } from './ai.types';
-import { asPlan, getStorageForUser } from '../../lib/storage';
+import { asPlan, getStorageForUser, resolveUserStorageContext } from '../../lib/storage';
 import type { Plan } from '../../../../shared/types';
+import { aiExtractQueue, enqueueAiExtract } from '../../lib/letterQueues';
 
 const AI_PREFIX = 'pdf-saas-ai';
 const AI_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-/** Extraction reads the whole file into memory — cap it to protect the process. */
+/** Extraction reads the whole file into memory on the worker — cap it to protect the process. */
 const AI_MAX_BYTES = 30 * 1024 * 1024;
 /** Keep only the most recent turns so a long chat can't grow the prompt unbounded. */
 const MAX_CHAT_TURNS = 20;
 /** Cache extracted PDF text so chat turns don't re-download + re-parse. */
-const AI_TEXT_CACHE_TTL = 30 * 60; // 30 minutes
 const AI_TEXT_CACHE_PREFIX = 'ai:pdftext:';
+const AI_EXTRACT_WAIT_MS = 120_000;
 
 const SYSTEM_PROMPT =
   'You are a precise document assistant. You answer strictly from the provided document text, never inventing facts that are not in it. If the answer is not in the document, say so plainly. Keep answers clear and well-structured.';
@@ -41,6 +42,15 @@ const EXPLAIN_PROMPTS: Record<string, string> = {
 function isOwnedAiKey(fileKey: string, userId: string, organizationId: string | null): boolean {
   if (organizationId && fileKey.startsWith(`org-${organizationId}/ai/`)) return true;
   return fileKey.startsWith(`${AI_PREFIX}/user-${userId}/`);
+}
+
+let aiExtractEvents: QueueEvents | null = null;
+
+function getAiExtractEvents(): QueueEvents {
+  if (!aiExtractEvents) {
+    aiExtractEvents = new QueueEvents(AI_EXTRACT_QUEUE, { connection: redis as any });
+  }
+  return aiExtractEvents;
 }
 
 export const aiService = {
@@ -109,14 +119,14 @@ export const aiService = {
   },
 
   /**
-   * Validates ownership + the real bytes, then extracts and returns the text.
-   * Runs BEFORE any credit is reserved, so a bad or scanned file never costs.
+   * Validates ownership + magic bytes on the API, then extracts text via the
+   * dedicated worker (cache-hit stays synchronous on Redis).
    */
   async prepareDocument(userId: string, fileKey: string): Promise<string> {
     if (!isAiConfigured()) {
       throw new AppError('AI features are not available right now. Please try again later.', 503);
     }
-    const { organizationId } = await getStorageForUser(userId);
+    const { organizationId, storageBindingId } = await resolveUserStorageContext(userId);
     if (!isOwnedAiKey(fileKey, userId, organizationId)) {
       throw new AppError('Invalid file for this account.', 400);
     }
@@ -133,29 +143,71 @@ export const aiService = {
     }
 
     let size: number;
+    let head: Buffer;
     try {
-      size = await headObjectSize(fileKey);
+      const probe = await readObjectHeadWithSize(fileKey, 1024, storageBindingId);
+      size = probe.size;
+      head = probe.bytes;
     } catch {
       throw new AppError('The uploaded file could not be found. Please re-upload.', 400);
     }
     if (size <= 0) throw new AppError('The uploaded file is empty.', 400);
     if (size > AI_MAX_BYTES) {
-      throw new AppError(`This PDF is too large for AI processing (max ${Math.floor(AI_MAX_BYTES / 1024 / 1024)}MB).`, 400);
+      throw new AppError(
+        `This PDF is too large for AI processing (max ${Math.floor(AI_MAX_BYTES / 1024 / 1024)}MB).`,
+        400
+      );
     }
-
-    const head = await readObjectHead(fileKey, 1024);
     if (detectFileCategory(head) !== 'pdf') throw new AppError('Only PDF files are supported.', 400);
 
-    const extracted = await extractPdfText(await getObjectBytes(fileKey));
-    assertHasText(extracted);
-
     try {
-      await redis.set(cacheKey, extracted.text, 'EX', AI_TEXT_CACHE_TTL);
-    } catch (err) {
-      logger.warn({ err }, 'AI text cache write failed');
-    }
+      const jobId = await enqueueAiExtract({
+        fileKey,
+        userId,
+        organizationId,
+        storageBindingId,
+      });
 
-    return extracted.text;
+      const bullJob = await aiExtractQueue.getJob(jobId);
+      if (bullJob) {
+        const state = await bullJob.getState();
+        if (state === 'completed') {
+          const result = bullJob.returnvalue as { text?: string } | undefined;
+          if (result?.text) return result.text;
+          const cachedDone = await redis.get(cacheKey).catch(() => null);
+          if (cachedDone) return cachedDone;
+        }
+        try {
+          const result = (await bullJob.waitUntilFinished(
+            getAiExtractEvents(),
+            AI_EXTRACT_WAIT_MS
+          )) as { text?: string };
+          if (result?.text) return result.text;
+        } catch (err) {
+          logger.warn({ err, fileKey }, 'AI extract waitUntilFinished failed — polling cache');
+        }
+      }
+
+      const deadline = Date.now() + AI_EXTRACT_WAIT_MS;
+      while (Date.now() < deadline) {
+        const cached = await redis.get(cacheKey).catch(() => null);
+        if (cached) return cached;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      throw new AppError('Document text extraction timed out. Please try again.', 504);
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      const msg = String((err as Error)?.message || err);
+      if (msg.includes('scanned') || msg.includes('extractable text') || msg.includes('OCR')) {
+        throw new AppError(
+          'This looks like a scanned PDF with no readable text. Run it through OCR first, then try again.',
+          422
+        );
+      }
+      if (msg.includes('too large')) throw new AppError(msg, 400);
+      logger.error({ err, fileKey }, 'AI extract failed');
+      throw new AppError('Could not extract text from this PDF. Please try again.', 502);
+    }
   },
 
   async getQuota(userId: string, plan: Plan) {

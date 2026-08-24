@@ -91,7 +91,12 @@ router.post(
   lettersController.startSend
 );
 router.get('/batches/:batchId/report', member, lettersController.report);
-router.get('/batches/:batchId/pdfs/zip', member, lettersController.downloadPdfsZip);
+router.post('/batches/:batchId/pdfs/zip', member, lettersController.downloadPdfsZip);
+router.get(
+  '/batches/:batchId/pdfs/zip/:zipJobId',
+  member,
+  lettersController.downloadPdfsZipStatus
+);
 router.get(
   '/batches/:batchId/employees/:employeeId/pdf',
   member,

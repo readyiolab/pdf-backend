@@ -13,6 +13,10 @@ declare global {
         plan: 'FREE' | 'PRO' | 'ENTERPRISE';
         isGuest: boolean;
         emailVerified: boolean;
+        /** From auth cache — null = personal / platform storage */
+        organizationId: string | null;
+        /** Active BYOC binding id when cached */
+        storageBindingId: string | null;
       };
       // The raw token claims, used by logout to revoke this exact token.
       tokenJti?: string;
@@ -190,6 +194,8 @@ async function runAuth(
       plan: cached.plan,
       isGuest: Boolean(decoded.isGuest),
       emailVerified: cached.emailVerified,
+      organizationId: cached.organizationId ?? null,
+      storageBindingId: cached.storageBindingId ?? null,
     };
     req.tokenJti = decoded.jti;
     req.tokenExp = decoded.exp;

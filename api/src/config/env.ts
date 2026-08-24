@@ -28,6 +28,8 @@ const envSchema = z.object({
   DB_PASSWORD: z.string().default(''),
   DB_NAME: z.string().default('pdf_saas'),
   DB_CONNECTION_LIMIT: z.coerce.number().default(10),
+  /** Max waiters for a free MySQL connection (0 = unbounded; production should stay finite). */
+  DB_QUEUE_LIMIT: z.coerce.number().default(200),
   REDIS_URL: z.string().url(),
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('24h'),

@@ -4,8 +4,7 @@ import {
   getSignedDownloadUrl,
   getSignedViewUrl,
   hashObject,
-  headObjectSize,
-  readObjectHead,
+  readObjectHeadWithSize,
   deleteObject,
   deleteObjects,
 } from '../../lib/s3';
@@ -196,8 +195,11 @@ export const signingService = {
     }
 
     let size: number;
+    let head: Buffer;
     try {
-      size = await headObjectSize(fileKey, storageBindingId);
+      const probe = await readObjectHeadWithSize(fileKey, 1024, storageBindingId);
+      size = probe.size;
+      head = probe.bytes;
     } catch {
       throw new AppError('The uploaded file could not be found. Please re-upload.', 400);
     }
@@ -212,7 +214,6 @@ export const signingService = {
       throw new AppError(`File size exceeds the ${maxMb}MB limit for signing documents.`, 400);
     }
 
-    const head = await readObjectHead(fileKey, 1024, storageBindingId);
     if (detectFileCategory(head) !== 'pdf') {
       await deleteObject(fileKey, storageBindingId);
       throw new AppError('Only PDF files can be sent for signature.', 400);

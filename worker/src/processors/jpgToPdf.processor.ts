@@ -18,11 +18,19 @@ export async function jpgToPdfProcessor(
   let pdfLocalPath = '';
 
   try {
-    // 1. Download all input images
-    for (const key of inputFileKeys) {
-      const localPath = await downloadFromS3(key);
-      localPaths.push(localPath);
-    }
+    // 1. Download input images with bounded concurrency
+    const DOWNLOAD_CONCURRENCY = 4;
+    const downloaded: string[] = new Array(inputFileKeys.length);
+    let nextIdx = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, inputFileKeys.length) }, async () => {
+        while (nextIdx < inputFileKeys.length) {
+          const i = nextIdx++;
+          downloaded[i] = await downloadFromS3(inputFileKeys[i]);
+        }
+      })
+    );
+    localPaths.push(...downloaded);
 
     const pdfDoc = await PDFDocument.create();
 
