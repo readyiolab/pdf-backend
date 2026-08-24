@@ -10,7 +10,7 @@ const PAPER_A4 = { w: 794, h: 1123 };
 
 export function emptyDocument(): DiagramDocument {
   return {
-    version: 1,
+    version: 2,
     pages: [{ id: crypto.randomUUID(), name: 'Page-1', nodes: [], edges: [] }],
     settings: {
       grid: true,
@@ -23,6 +23,7 @@ export function emptyDocument(): DiagramDocument {
       paper: 'a4-portrait',
       pageWidth: PAPER_A4.w,
       pageHeight: PAPER_A4.h,
+      theme: 'automatic',
     },
   };
 }

@@ -14,6 +14,7 @@ export const nodeStyleSchema = z.object({
   opacity: z.number().optional(),
   align: z.string().optional(),
   verticalAlign: z.string().optional(),
+  rotation: z.number().optional(),
 });
 
 export const edgeStyleSchema = z.object({
@@ -26,7 +27,48 @@ export const edgeStyleSchema = z.object({
   curved: z.boolean().optional(),
   fontSize: z.number().optional(),
   fontColor: z.string().optional(),
+  exitX: z.number().optional(),
+  exitY: z.number().optional(),
+  entryX: z.number().optional(),
+  entryY: z.number().optional(),
+  points: z.array(z.tuple([z.number(), z.number()])).optional(),
 });
+
+export const freehandPointSchema = z.union([
+  z.tuple([z.number(), z.number()]),
+  z.tuple([z.number(), z.number(), z.number()]),
+]);
+
+export const freehandSchema = z.object({
+  points: z.array(freehandPointSchema),
+  size: z.number(),
+  color: z.string(),
+  opacity: z.number(),
+  brush: z.enum(['pen', 'brush']),
+});
+
+export const tableCellSchema = z.object({
+  r: z.number(),
+  c: z.number(),
+  rowSpan: z.number().optional(),
+  colSpan: z.number().optional(),
+  text: z.string().optional(),
+  fill: z.string().optional(),
+});
+
+export const tableSchema = z.object({
+  rows: z.number(),
+  cols: z.number(),
+  cells: z.array(tableCellSchema),
+});
+
+export const containerSchema = z.object({
+  title: z.string().optional(),
+  collapsed: z.boolean().optional(),
+  childIds: z.array(z.string()).optional(),
+});
+
+export const nodeKindSchema = z.enum(['shape', 'freehand', 'table', 'container', 'text']);
 
 export const diagramNodeSchema = z.object({
   id: z.string().min(1),
@@ -37,6 +79,12 @@ export const diagramNodeSchema = z.object({
   w: z.number().positive().default(120),
   h: z.number().positive().default(60),
   style: nodeStyleSchema.optional(),
+  kind: nodeKindSchema.optional().default('shape'),
+  locked: z.boolean().optional(),
+  groupId: z.string().optional(),
+  freehand: freehandSchema.optional(),
+  table: tableSchema.optional(),
+  container: containerSchema.optional(),
 });
 
 export const diagramEdgeSchema = z.object({
@@ -54,8 +102,30 @@ export const diagramPageSchema = z.object({
   edges: z.array(diagramEdgeSchema).default([]),
 });
 
+export const paperEnum = z.enum([
+  'a0',
+  'a1',
+  'a2',
+  'a3',
+  'a4-portrait',
+  'a4-landscape',
+  'a5',
+  'a6',
+  'a7',
+  'letter',
+  'legal',
+  'tabloid',
+  'executive',
+  'widescreen-16-9',
+  'widescreen-16-10',
+  'standard-4-3',
+  'custom',
+]);
+
+export const themeEnum = z.enum(['automatic', 'classic', 'simple', 'minimal', 'sketch', 'atlas']);
+
 export const diagramDocumentSchema = z.object({
-  version: z.literal(1).default(1),
+  version: z.union([z.literal(1), z.literal(2)]).default(2),
   pages: z.array(diagramPageSchema).min(1),
   settings: z
     .object({
@@ -66,9 +136,10 @@ export const diagramDocumentSchema = z.object({
       connectionArrows: z.boolean().optional(),
       connectionPoints: z.boolean().optional(),
       guides: z.boolean().optional(),
-      paper: z.enum(['a4-portrait', 'a4-landscape', 'letter', 'custom']).optional(),
+      paper: paperEnum.optional(),
       pageWidth: z.number().optional(),
       pageHeight: z.number().optional(),
+      theme: themeEnum.optional(),
     })
     .optional(),
 });

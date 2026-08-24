@@ -22,7 +22,7 @@ const AI_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const GENERATE_SYSTEM = `You are a diagram generation assistant for PDFPRODUCT.
 Return ONLY a single JSON object matching this DiagramDocument schema (no markdown, no commentary):
 {
-  "version": 1,
+  "version": 2,
   "pages": [
     {
       "id": "<uuid>",
@@ -33,6 +33,7 @@ Return ONLY a single JSON object matching this DiagramDocument schema (no markdo
           "label": "string",
           "shape": "rectangle|rounded|ellipse|diamond|hexagon|cylinder|...",
           "x": number, "y": number, "w": number, "h": number,
+          "kind": "shape",
           "style": { "fill"?, "stroke"?, "fontSize"?, ... }
         }
       ],
@@ -57,11 +58,12 @@ Return ONLY a single JSON object matching this DiagramDocument schema (no markdo
     "guides": true,
     "paper": "a4-portrait",
     "pageWidth": 794,
-    "pageHeight": 1123
+    "pageHeight": 1123,
+    "theme": "automatic"
   }
 }
 Rules:
-- version must be 1
+- version must be 1 or 2 (prefer 2)
 - at least one page with unique node/edge ids
 - place nodes with sensible spacing (avoid overlap)
 - edges must reference existing node ids
@@ -69,7 +71,7 @@ Rules:
 
 const EDIT_SYSTEM = `You edit a single diagram page. Return ONLY a JSON array of patch operations.
 Allowed ops (discriminated by "op"):
-- {"op":"addNode","node":{id,label,shape,x,y,w,h,style?}}
+- {"op":"addNode","node":{id,label,shape,x,y,w,h,kind?,style?}}
 - {"op":"updateNode","id":"...","changes":{label?,shape?,x?,y?,w?,h?,style?}}
 - {"op":"removeNode","id":"..."}
 - {"op":"addEdge","edge":{id,source,target,label?,style?}}
@@ -79,7 +81,7 @@ Allowed ops (discriminated by "op"):
 No markdown, no commentary — JSON array only.`;
 
 const REPAIR_DOC_SYSTEM =
-  'Fix the following into valid DiagramDocument JSON only. Shape: {"version":1,"pages":[...],"settings":{...}}. No markdown.';
+  'Fix the following into valid DiagramDocument JSON only. Shape: {"version":1|2,"pages":[...],"settings":{...}}. No markdown.';
 
 const REPAIR_PATCH_SYSTEM =
   'Fix the following into a valid JSON array of diagram patch ops only. No markdown.';
