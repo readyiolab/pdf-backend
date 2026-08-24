@@ -114,6 +114,7 @@ export async function initializeCustomerTrackingSchema(conn: PoolConnection): Pr
   await ensureIndex(conn, 'tbl_user_attribution', 'idx_attr_last_seen', 'lastSeenAt');
 
   // One-shot backfill: existing accounts without attribution get direct/unknown rows.
+  // Guests are authProvider='guest' (no isGuest column on tbl_user).
   await conn.query(`
     INSERT IGNORE INTO tbl_user_attribution (
       userId, acquisitionChannel, firstVisitAt, signupAt, lastSeenAt
@@ -121,7 +122,7 @@ export async function initializeCustomerTrackingSchema(conn: PoolConnection): Pr
     SELECT u.id, 'direct', u.createdAt, u.createdAt, u.createdAt
       FROM tbl_user u
       LEFT JOIN tbl_user_attribution a ON a.userId = u.id
-     WHERE u.isGuest = 0
+     WHERE COALESCE(u.authProvider, 'password') <> 'guest'
        AND a.userId IS NULL
   `);
 }

@@ -312,7 +312,7 @@ export const adminService = {
     const page = Math.max(1, Number(filters.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(filters.limit) || 50));
     const offset = (page - 1) * limit;
-    const where: string[] = ['u.isGuest = 0'];
+    const where: string[] = ["COALESCE(u.authProvider, 'password') <> 'guest'"];
     const params: unknown[] = [];
 
     if (filters.channel && filters.channel !== 'all') {
@@ -434,7 +434,7 @@ export const adminService = {
     const user = await db.select(
       'tbl_user',
       'id, email, name, plan, createdAt, organizationId',
-      'id = ? AND isGuest = 0',
+      "id = ? AND COALESCE(authProvider, 'password') <> 'guest'",
       [userId]
     );
     if (!user) throw new AppError('Customer not found', 404);
