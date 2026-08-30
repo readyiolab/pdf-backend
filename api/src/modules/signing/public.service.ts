@@ -439,12 +439,15 @@ export const publicSigningService = {
         );
       }
 
-      await conn.query(
+      const [completeResult]: any = await conn.query(
         `UPDATE tbl_sign_recipient
             SET status = 'COMPLETED', completedAt = ?, ipAddress = ?, deviceInfo = ?
-          WHERE id = ?`,
+          WHERE id = ? AND status NOT IN ('COMPLETED', 'DECLINED')`,
         [now, ctx.ipAddress, [ctx.browser, ctx.os, ctx.device].filter(Boolean).join(' · ') || null, recipient.id]
       );
+      if (completeResult.affectedRows === 0) {
+        throw new AppError('You have already signed this document.', 409);
+      }
 
       await db.commit(conn);
     } catch (err) {

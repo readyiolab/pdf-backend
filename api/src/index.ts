@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
 import { env } from './config/env';
 import { logger } from './lib/logger';
@@ -23,6 +24,15 @@ import { startLetterWorkers, stopLetterWorkers } from './lib/letterWorkers';
 import { startStorageCacheInvalidationSubscriber, startByocHealthAlertSubscriber } from './lib/storage';
 import { redis } from './lib/redis';
 import { db } from './lib/mysql';
+
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: reason }, 'Unhandled promise rejection');
+  process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'Uncaught exception');
+  process.exit(1);
+});
 
 const app = express();
 
@@ -51,6 +61,8 @@ app.use(
     maxAge: 86400, // Cache preflight OPTIONS responses for 24 hours
   })
 );
+
+app.use(cookieParser());
 
 // Admin queue dashboard (bull-board), gated by HTTP Basic Auth against
 // ADMIN_TOKEN. Disabled entirely when ADMIN_TOKEN is not set. Mounted before the

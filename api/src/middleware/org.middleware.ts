@@ -58,15 +58,8 @@ export async function resolveOrgContext(req: Request): Promise<OrgContext> {
       'organizationId = ? AND userId = ? AND status = ?',
       [requestedOrgId, req.user.id, 'ACTIVE']
     );
-    // Stale X-Organization-Id from a previous account / invite — fall back
-    // to the caller's first ACTIVE membership instead of hard-403.
     if (!membership) {
-      membership = await db.select(
-        'tbl_org_user',
-        '*',
-        'userId = ? AND status = ?',
-        [req.user.id, 'ACTIVE']
-      );
+      throw new AppError('You do not have access to this organization.', 403);
     }
   } else {
     membership = await db.select(

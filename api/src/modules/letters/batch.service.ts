@@ -5,6 +5,7 @@ import { AppError } from '../../middleware/errorHandler.middleware';
 import { PLAN_LIMITS } from '../../../../shared/constants';
 import { writeLetterAudit } from '../orgs/orgs.service';
 import { orgScope } from './orgScope';
+import { parsePagination, paginationMeta } from '../../lib/pagination';
 import { SYSTEM_FIELDS, REQUIRED_FIELDS_BY_TYPE, type LetterType, type SystemField } from './letterFields';
 import { templateService } from './brandTemplate.service';
 
@@ -24,17 +25,25 @@ function parseJson<T>(value: unknown, fallback: T): T {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Mitigate xlsx CVE surface: cap upload size and rows parsed (no npm fix for sheetjs). */
+const MAX_EXCEL_BYTES = 5 * 1024 * 1024;
+const MAX_EXCEL_ROWS = 10_000;
+
 export const batchService = {
-  async list(organizationId: string) {
-    const rows = await orgScope.selectAll(
-      organizationId,
-      'tbl_letter_batch',
-      '*',
-      '',
-      [],
-      'ORDER BY createdAt DESC'
+  async list(organizationId: string, page = 1, limit = 50) {
+    const { page: safePage, limit: safeLimit, offset } = parsePagination(page, limit);
+    const total = await orgScope.count(organizationId, 'tbl_letter_batch');
+    const rows = await db.queryAll(
+      `SELECT * FROM tbl_letter_batch
+        WHERE organizationId = ?
+        ORDER BY createdAt DESC
+        LIMIT ? OFFSET ?`,
+      [organizationId, safeLimit, offset]
     );
-    return rows.map(publicBatch);
+    return {
+      batches: rows.map(publicBatch),
+      pagination: paginationMeta(safePage, safeLimit, total),
+    };
   },
 
   async get(organizationId: string, batchId: string) {
@@ -82,7 +91,14 @@ export const batchService = {
    * unless createEmployees=true (after mapping).
    */
   parseWorkbook(buffer: Buffer): { headers: string[]; preview: Record<string, unknown>[]; totalRows: number; rows: Record<string, unknown>[] } {
-    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    if (buffer.length > MAX_EXCEL_BYTES) {
+      throw new AppError(`Spreadsheet exceeds ${MAX_EXCEL_BYTES / (1024 * 1024)}MB limit`, 400);
+    }
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+      sheetRows: MAX_EXCEL_ROWS + 1,
+    });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) throw new AppError('Spreadsheet has no sheets', 400);
     const sheet = workbook.Sheets[sheetName];
@@ -91,6 +107,9 @@ export const batchService = {
       raw: false,
     });
     if (!rows.length) throw new AppError('Spreadsheet has no data rows', 400);
+    if (rows.length > MAX_EXCEL_ROWS) {
+      throw new AppError(`Spreadsheet exceeds ${MAX_EXCEL_ROWS.toLocaleString()} row limit`, 400);
+    }
     const headers = Object.keys(rows[0]);
     return {
       headers,

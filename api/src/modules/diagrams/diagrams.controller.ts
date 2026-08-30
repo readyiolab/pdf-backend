@@ -1,17 +1,25 @@
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import { diagramsService } from './diagrams.service';
 import { diagramAiService } from './diagramAi.service';
+
+const listQuerySchema = z.object({
+  folderId: z.string().optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
 
 export const diagramsController = {
   async list(req: Request, res: Response, next: NextFunction) {
     try {
-      const folderId =
-        typeof req.query.folderId === 'string' ? req.query.folderId : undefined;
-      const diagrams = await diagramsService.list(
+      const query = listQuerySchema.parse(req.query);
+      const result = await diagramsService.list(
         req.orgContext!.organizationId,
-        folderId
+        query.folderId,
+        query.page,
+        query.limit
       );
-      res.json({ diagrams });
+      res.json(result);
     } catch (e) {
       next(e);
     }

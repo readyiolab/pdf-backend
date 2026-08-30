@@ -2,6 +2,11 @@ import { z } from 'zod';
 import { Request, Response, NextFunction } from 'express';
 import { adminService } from './admin.service';
 
+const paginationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
 export const adminController = {
   async login(req: Request, res: Response, next: NextFunction) {
     try {
@@ -29,7 +34,8 @@ export const adminController = {
 
   async listOrganizations(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = await adminService.listOrganizations();
+      const query = paginationQuerySchema.parse(req.query);
+      const data = await adminService.listOrganizations(query.page, query.limit);
       res.json({ success: true, data });
     } catch (err) {
       next(err);

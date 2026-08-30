@@ -49,10 +49,15 @@ export const jobsController = {
    * token is passed as a query param and verified here (send only over HTTPS).
    */
   async streamJob(req: Request, res: Response) {
-    const token = String(req.query.token || '');
+    const queryToken = String(req.query.token || '');
+    const cookieToken = req.cookies?.saas_session as string | undefined;
+    const token = cookieToken || queryToken;
     const { jobId } = req.params;
 
-    // Authenticate via query token before opening the stream.
+    if (!token) {
+      res.status(401).json({ status: 'error', message: 'Authentication required' });
+      return;
+    }
     let userId: string;
     try {
       const decoded = verifyToken(token, { audience: CUSTOMER_JWT_AUDIENCE });

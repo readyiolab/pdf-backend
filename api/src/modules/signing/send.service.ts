@@ -15,6 +15,27 @@ const SIGN_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 /** Roles that are actually asked to do something. VIEWER/CC just receive a copy. */
 const ACTIONABLE_ROLES = new Set(['SIGNER', 'APPROVER']);
 
+async function bulkUpdateRecipientTokens(
+  conn: Awaited<ReturnType<typeof db.beginTransaction>>,
+  updates: { id: string; token: string; status: string }[],
+  expiresAt: Date
+): Promise<void> {
+  if (updates.length === 0) return;
+  const tokenCases = updates.map(() => 'WHEN ? THEN ?').join(' ');
+  const statusCases = updates.map(() => 'WHEN ? THEN ?').join(' ');
+  const ids = updates.map((u) => u.id);
+  const tokenParams = updates.flatMap((u) => [u.id, u.token]);
+  const statusParams = updates.flatMap((u) => [u.id, u.status]);
+  await conn.query(
+    `UPDATE tbl_sign_recipient
+        SET signingToken = CASE id ${tokenCases} END,
+            tokenExpiresAt = ?,
+            status = CASE id ${statusCases} END
+      WHERE id IN (${ids.map(() => '?').join(',')})`,
+    [...tokenParams, expiresAt, ...statusParams, ...ids]
+  );
+}
+
 export interface SendResult {
   documentId: string;
   status: string;
@@ -144,13 +165,17 @@ export const sendService = {
       }
 
       for (const r of recipients) {
-        const token = generateSigningToken();
-        tokens.set(r.id, token);
-        await conn.query(
-          'UPDATE tbl_sign_recipient SET signingToken = ?, tokenExpiresAt = ?, status = ? WHERE id = ?',
-          [token, expiresAt, 'PENDING', r.id]
-        );
+        tokens.set(r.id, generateSigningToken());
       }
+      await bulkUpdateRecipientTokens(
+        conn,
+        recipients.map((r: any) => ({
+          id: r.id,
+          token: tokens.get(r.id)!,
+          status: 'PENDING',
+        })),
+        expiresAt
+      );
       await conn.query(
         "UPDATE tbl_sign_document SET status = 'SENT', sentAt = ?, expiresAt = ? WHERE id = ?",
         [new Date(), expiresAt, documentId]
@@ -203,21 +228,23 @@ export const sendService = {
 
     void (async () => {
       try {
-        for (const r of recipients as any[]) {
-          const contactId = await upsertContact({
-            email: r.email,
-            name: r.name,
-            source: 'esign',
-          });
-          if (contactId) {
-            await recordCustomerEvent({
-              type: 'esign_sent',
-              userId,
-              contactId,
-              meta: { documentId, role: r.role },
+        await Promise.all(
+          (recipients as any[]).map(async (r) => {
+            const contactId = await upsertContact({
+              email: r.email,
+              name: r.name,
+              source: 'esign',
             });
-          }
-        }
+            if (contactId) {
+              await recordCustomerEvent({
+                type: 'esign_sent',
+                userId,
+                contactId,
+                meta: { documentId, role: r.role },
+              });
+            }
+          })
+        );
         await recordCustomerEvent({
           type: 'esign_sent',
           userId,
@@ -326,13 +353,12 @@ export const sendService = {
         );
       }
 
-      for (const r of recipients) {
-        const rToken = r.id === self.id ? token : generateSigningToken();
-        await conn.query(
-          'UPDATE tbl_sign_recipient SET signingToken = ?, tokenExpiresAt = ?, status = ? WHERE id = ?',
-          [rToken, expiresAt, r.id === self.id ? 'SENT' : 'PENDING', r.id]
-        );
-      }
+      const selfUpdates = recipients.map((r: any) => ({
+        id: r.id,
+        token: r.id === self.id ? token : generateSigningToken(),
+        status: r.id === self.id ? 'SENT' : 'PENDING',
+      }));
+      await bulkUpdateRecipientTokens(conn, selfUpdates, expiresAt);
       await conn.query(
         "UPDATE tbl_sign_document SET status = 'SENT', sentAt = ?, expiresAt = ? WHERE id = ?",
         [new Date(), expiresAt, documentId]

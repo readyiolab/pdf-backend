@@ -6,6 +6,7 @@ import { AppError } from '../../middleware/errorHandler.middleware';
 import { logger } from '../../lib/logger';
 import { redis } from '../../lib/redis';
 import { enqueueLetterZip } from '../../lib/letterQueues';
+import { parsePagination, paginationMeta } from '../../lib/pagination';
 import crypto from 'crypto';
 
 const ZIP_STATUS_PREFIX = 'letter:zip:';
@@ -30,7 +31,9 @@ export async function getLetterZipStatusRaw(jobId: string): Promise<LetterZipSta
 }
 
 export const historyService = {
-  async listBatches(organizationId: string) {
+  async listBatches(organizationId: string, page = 1, limit = 50) {
+    const { page: safePage, limit: safeLimit, offset } = parsePagination(page, limit);
+    const total = await db.count('tbl_letter_batch', 'organizationId = ?', [organizationId]);
     const rows = await db.queryAll<any>(
       `SELECT b.*,
               t.name AS templateName, t.type AS templateType, t.version AS templateVersion,
@@ -40,10 +43,10 @@ export const historyService = {
          LEFT JOIN tbl_letter_brand_profile bp ON bp.id = b.brandProfileId
         WHERE b.organizationId = ?
         ORDER BY b.createdAt DESC
-        LIMIT 200`,
-      [organizationId]
+        LIMIT ? OFFSET ?`,
+      [organizationId, safeLimit, offset]
     );
-    return rows.map((r) => ({
+    const batches = rows.map((r) => ({
       id: r.id,
       status: r.status,
       totalRows: r.totalRows,
@@ -62,6 +65,7 @@ export const historyService = {
       createdAt: r.createdAt,
       generatedAt: r.generatedAt,
     }));
+    return { batches, pagination: paginationMeta(safePage, safeLimit, total) };
   },
 
   async getBatchDetail(organizationId: string, batchId: string) {

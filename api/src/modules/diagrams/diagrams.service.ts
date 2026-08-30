@@ -3,6 +3,7 @@ import { db } from '../../lib/mysql';
 import { env } from '../../config/env';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import type { DiagramDocument } from './diagrams.types';
+import { parsePagination, paginationMeta } from '../../lib/pagination';
 
 const MAX_VERSIONS = 20;
 
@@ -123,26 +124,38 @@ async function pruneVersions(diagramId: string) {
 export const diagramsService = {
   emptyDocument,
 
-  async list(organizationId: string, folderId?: string | null) {
+  async list(organizationId: string, folderId?: string | null, page = 1, limit = 50) {
+    const { page: safePage, limit: safeLimit, offset } = parsePagination(page, limit);
     let rows: any[];
+    let total: number;
     if (folderId === undefined || folderId === null || folderId === '') {
-      rows = await db.selectAll(
-        'tbl_diagram',
-        'id, organizationId, folderId, title, currentVersion, createdBy, createdAt, updatedAt, thumbnailPngKey',
-        'organizationId = ?',
-        [organizationId],
-        'ORDER BY updatedAt DESC'
+      total = await db.count('tbl_diagram', 'organizationId = ?', [organizationId]);
+      rows = await db.queryAll(
+        `SELECT id, organizationId, folderId, title, currentVersion, createdBy, createdAt, updatedAt, thumbnailPngKey
+           FROM tbl_diagram
+          WHERE organizationId = ?
+          ORDER BY updatedAt DESC
+          LIMIT ? OFFSET ?`,
+        [organizationId, safeLimit, offset]
       );
     } else {
-      rows = await db.selectAll(
-        'tbl_diagram',
-        'id, organizationId, folderId, title, currentVersion, createdBy, createdAt, updatedAt, thumbnailPngKey',
-        'organizationId = ? AND folderId = ?',
-        [organizationId, folderId],
-        'ORDER BY updatedAt DESC'
+      total = await db.count('tbl_diagram', 'organizationId = ? AND folderId = ?', [
+        organizationId,
+        folderId,
+      ]);
+      rows = await db.queryAll(
+        `SELECT id, organizationId, folderId, title, currentVersion, createdBy, createdAt, updatedAt, thumbnailPngKey
+           FROM tbl_diagram
+          WHERE organizationId = ? AND folderId = ?
+          ORDER BY updatedAt DESC
+          LIMIT ? OFFSET ?`,
+        [organizationId, folderId, safeLimit, offset]
       );
     }
-    return rows.map((r) => publicDiagram(r, false));
+    return {
+      diagrams: rows.map((r) => publicDiagram(r, false)),
+      pagination: paginationMeta(safePage, safeLimit, total),
+    };
   },
 
   async get(organizationId: string, id: string) {

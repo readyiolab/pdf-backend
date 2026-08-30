@@ -5,6 +5,7 @@ import { env } from '../config/env';
 
 export const ADMIN_JWT_AUDIENCE = 'platform-admin';
 export const CUSTOMER_JWT_AUDIENCE = 'customer';
+export const REFRESH_JWT_AUDIENCE = 'customer-refresh';
 
 export interface TokenClaims {
   userId: string;
@@ -33,6 +34,17 @@ export function signToken(
     expiresIn: expiresIn as any,
     jwtid: crypto.randomUUID(),
     audience: opts?.audience || CUSTOMER_JWT_AUDIENCE,
+    algorithm: 'HS256',
+  });
+}
+
+/** Long-lived refresh token for silent session renewal via httpOnly cookie. */
+export function signRefreshToken(claims: TokenClaims): string {
+  return jwt.sign(claims, env.JWT_SECRET, {
+    expiresIn: env.REFRESH_JWT_EXPIRES_IN as any,
+    jwtid: crypto.randomUUID(),
+    audience: REFRESH_JWT_AUDIENCE,
+    algorithm: 'HS256',
   });
 }
 
@@ -42,6 +54,7 @@ export function verifyToken(
 ): DecodedToken {
   const verified = jwt.verify(token, env.JWT_SECRET, {
     audience: opts?.audience as jwt.VerifyOptions['audience'],
+    algorithms: ['HS256'],
   });
   return verified as unknown as DecodedToken;
 }

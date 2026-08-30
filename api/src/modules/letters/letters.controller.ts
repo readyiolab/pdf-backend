@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import { brandService, templateService } from './brandTemplate.service';
 import { batchService } from './batch.service';
 import { generateService } from './generate.service';
@@ -169,7 +170,18 @@ export const lettersController = {
   // --- Batches / import ---
   async listBatches(req: Request, res: Response, next: NextFunction) {
     try {
-      res.json({ batches: await historyService.listBatches(req.orgContext!.organizationId) });
+      const query = z
+        .object({
+          page: z.coerce.number().int().min(1).optional(),
+          limit: z.coerce.number().int().min(1).max(100).optional(),
+        })
+        .parse(req.query);
+      const result = await historyService.listBatches(
+        req.orgContext!.organizationId,
+        query.page,
+        query.limit
+      );
+      res.json(result);
     } catch (e) {
       next(e);
     }

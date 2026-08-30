@@ -6,6 +6,33 @@ import { invalidateUser } from '../../lib/userCache';
 import { AppError } from '../../middleware/errorHandler.middleware';
 import { recordCustomerEvent } from '../../lib/customerTracking';
 
+const PROVIDER = 'razorpay';
+
+async function isWebhookProcessed(eventId: string): Promise<boolean> {
+  const row = await db.select(
+    'tbl_webhook_event',
+    'status',
+    'provider = ? AND eventId = ?',
+    [PROVIDER, eventId]
+  );
+  return row?.status === 'PROCESSED';
+}
+
+async function markWebhookProcessed(eventId: string, eventName: string | null): Promise<void> {
+  try {
+    await db.insert('tbl_webhook_event', {
+      id: crypto.randomUUID(),
+      provider: PROVIDER,
+      eventId,
+      eventName,
+      status: 'PROCESSED',
+    });
+  } catch (err: any) {
+    if (err?.code === 'ER_DUP_ENTRY') return;
+    throw err;
+  }
+}
+
 export const webhooksService = {
   async handleRazorpayWebhook(rawBody: string, signature: string) {
     const webhookSecret = env.RAZORPAY_WEBHOOK_SECRET;
@@ -14,7 +41,6 @@ export const webhooksService = {
       throw new AppError('Webhook secret is not configured', 503);
     }
 
-    // 1. Verify webhook signature (constant-time comparison to avoid timing leaks)
     const computedSignature = crypto
       .createHmac('sha256', webhookSecret)
       .update(rawBody)
@@ -30,7 +56,6 @@ export const webhooksService = {
       throw new AppError('Invalid webhook signature', 400);
     }
 
-    // 2. Parse payload
     let event: any;
     try {
       event = JSON.parse(rawBody);
@@ -44,36 +69,25 @@ export const webhooksService = {
       throw new AppError('Webhook event id missing', 400);
     }
 
-    // 3. Idempotency — Razorpay may retry; ignore duplicates
-    try {
-      await db.insert('tbl_webhook_event', {
-        id: crypto.randomUUID(),
-        provider: 'razorpay',
-        eventId,
-        eventName: eventName || null,
-      });
-    } catch (err: any) {
-      if (err?.code === 'ER_DUP_ENTRY') {
-        logger.info({ eventId, eventName }, 'Duplicate Razorpay webhook ignored');
-        return { success: true, message: 'Duplicate event ignored' };
-      }
-      throw err;
+    if (await isWebhookProcessed(eventId)) {
+      logger.info({ eventId, eventName }, 'Duplicate Razorpay webhook ignored');
+      return { success: true, message: 'Duplicate event ignored' };
     }
 
     const subscriptionData = event.payload?.subscription?.entity;
 
     if (!subscriptionData) {
       logger.info({ eventName }, 'Received unhandled Razorpay event type or empty entity');
+      await markWebhookProcessed(eventId, eventName || null);
       return { success: true, message: 'Event ignored' };
     }
 
     const subId = subscriptionData.id;
     const subStatus = subscriptionData.status;
-    const currentEndEpoch = subscriptionData.current_end; // unix timestamp
+    const currentEndEpoch = subscriptionData.current_end;
 
     logger.info({ eventName, subId, subStatus, eventId }, 'Processing Razorpay webhook');
 
-    // 4. Process events
     switch (eventName) {
       case 'subscription.activated':
       case 'subscription.charged': {
@@ -143,6 +157,7 @@ export const webhooksService = {
         logger.info({ eventName }, 'Unhandled webhook event type');
     }
 
+    await markWebhookProcessed(eventId, eventName || null);
     return { success: true };
   },
 };

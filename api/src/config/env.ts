@@ -34,6 +34,9 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('24h'),
   GUEST_JWT_EXPIRES_IN: z.string().default('24h'),
+  REFRESH_JWT_EXPIRES_IN: z.string().default('7d'),
+  /** Parent domain for session cookies (e.g. .zuvigo.com). Leave unset for host-only. */
+  COOKIE_DOMAIN: z.string().optional(),
   // bcrypt cost for user passwords (10 ≈ 100ms; 12 can feel sluggish on register/login).
   BCRYPT_ROUNDS: z.coerce.number().min(10).max(15).default(10),
   // Cheaper cost for short-lived OTP / access-code hashes (not long-lived passwords).

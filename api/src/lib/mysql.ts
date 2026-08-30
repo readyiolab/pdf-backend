@@ -115,11 +115,21 @@ async function initializeDatabase(dbPool: Pool): Promise<void> {
         provider VARCHAR(50) NOT NULL,
         eventId VARCHAR(255) NOT NULL,
         eventName VARCHAR(100) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'PROCESSED',
         processedAt DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
         UNIQUE KEY uq_webhook_provider_event (provider, eventId),
         INDEX idx_webhook_processed (processedAt)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+    await ensureColumn(
+      conn,
+      'tbl_webhook_event',
+      'status',
+      "VARCHAR(20) NOT NULL DEFAULT 'PROCESSED' AFTER eventName"
+    );
+
+    await ensureColumn(conn, 'tbl_user', 'failedLoginAttempts', 'INT NOT NULL DEFAULT 0 AFTER authProvider');
+    await ensureColumn(conn, 'tbl_user', 'lockedUntil', 'DATETIME(3) NULL AFTER failedLoginAttempts');
 
     await initializeSigningSchema(conn);
     await initializeByocSchema(conn);

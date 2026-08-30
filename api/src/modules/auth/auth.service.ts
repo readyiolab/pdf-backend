@@ -13,6 +13,8 @@ import { stitchUserAttribution } from '../../lib/customerTracking';
 import type { AttributionPayload } from '../../lib/customerTracking';
 
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_MS = 15 * 60 * 1000;
 
 function hashVerifyToken(raw: string): string {
   return crypto.createHash('sha256').update(raw).digest('hex');
@@ -136,13 +138,17 @@ export const authService = {
 
     const user: any = await db.select(
       'tbl_user',
-      'id, email, passwordHash, name, plan, emailVerified, authProvider',
+      'id, email, passwordHash, name, plan, emailVerified, authProvider, failedLoginAttempts, lockedUntil',
       'email = ?',
       [email.toLowerCase()]
     );
 
     if (!user) {
       throw new AppError('Invalid email or password', 401);
+    }
+
+    if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+      throw new AppError('Account temporarily locked. Try again later.', 429);
     }
 
     // Guest / Google accounts are not password-loginable (no expensive bcrypt).
@@ -157,8 +163,17 @@ export const authService = {
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
+      const attempts = (user.failedLoginAttempts ?? 0) + 1;
+      const patch: Record<string, unknown> = { failedLoginAttempts: attempts };
+      if (attempts >= MAX_LOGIN_ATTEMPTS) {
+        patch.lockedUntil = new Date(Date.now() + LOCKOUT_MS);
+        patch.failedLoginAttempts = 0;
+      }
+      await db.update('tbl_user', patch, 'id = ?', [user.id]);
       throw new AppError('Invalid email or password', 401);
     }
+
+    await db.update('tbl_user', { failedLoginAttempts: 0, lockedUntil: null }, 'id = ?', [user.id]);
 
     void stitchUserAttribution({
       userId: user.id,
@@ -371,5 +386,30 @@ export const authService = {
       logger.error({ err, email: user.email }, 'Failed to resend verification email');
     });
     return { sent: true };
+  },
+
+  async refreshSession(userId: string): Promise<AuthResponse> {
+    const user: any = await db.select(
+      'tbl_user',
+      'id, email, name, plan, emailVerified, authProvider',
+      'id = ?',
+      [userId]
+    );
+    if (!user) {
+      throw new AppError('User not found', 401);
+    }
+
+    const isGuest = user.authProvider === 'guest';
+    const token = signToken({
+      userId: user.id,
+      email: user.email,
+      plan: user.plan,
+      ...(isGuest ? { isGuest: true } : {}),
+    });
+
+    return {
+      token,
+      user: toAuthUser({ ...user, isGuest }),
+    };
   },
 };

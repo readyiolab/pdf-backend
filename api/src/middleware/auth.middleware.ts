@@ -94,11 +94,17 @@ async function runAuth(
 ): Promise<void> {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new AppError('Authorization token is missing or malformed', 401);
+    let token: string | undefined;
+
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (req.cookies?.saas_session) {
+      token = req.cookies.saas_session;
     }
 
-    const token = authHeader.split(' ')[1];
+    if (!token) {
+      throw new AppError('Authorization token is missing or malformed', 401);
+    }
 
     let decoded;
     try {

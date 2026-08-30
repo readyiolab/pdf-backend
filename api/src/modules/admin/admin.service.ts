@@ -7,6 +7,7 @@ import { invalidateUser } from '../../lib/userCache';
 import { isPlatformAdminUser } from '../../middleware/platformAdmin.middleware';
 import { ADMIN_JWT_AUDIENCE, signToken } from '../../lib/jwt';
 import { env } from '../../config/env';
+import { parsePagination, paginationMeta } from '../../lib/pagination';
 
 function publicOrgRow(row: any) {
   return {
@@ -107,7 +108,9 @@ export const adminService = {
     };
   },
 
-  async listOrganizations() {
+  async listOrganizations(page = 1, limit = 50) {
+    const { page: safePage, limit: safeLimit, offset } = parsePagination(page, limit);
+    const total = await db.count('tbl_organization');
     const rows = await db.queryAll(
       `SELECT o.*,
               u.email AS ownerEmail,
@@ -130,9 +133,14 @@ export const adminService = {
          LEFT JOIN tbl_user u ON u.id = o.ownerUserId
          LEFT JOIN tbl_org_storage_config s ON s.organizationId = o.id
          LEFT JOIN tbl_org_storage_binding b ON b.id = s.activeBindingId
-         ORDER BY o.createdAt DESC`
+         ORDER BY o.createdAt DESC
+         LIMIT ? OFFSET ?`,
+      [safeLimit, offset]
     );
-    const data = { organizations: rows.map(publicOrgRow) };
+    const data = {
+      organizations: rows.map(publicOrgRow),
+      pagination: paginationMeta(safePage, safeLimit, total),
+    };
     assertNoSecrets(data);
     return data;
   },

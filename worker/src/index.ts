@@ -15,6 +15,15 @@ import { startWorkerStorageCacheSubscriber } from './storage/s3';
 
 logger.info('Initializing Worker Service...');
 
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: reason }, 'Unhandled promise rejection');
+  process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'Uncaught exception');
+  process.exit(1);
+});
+
 let heavyWorker: any;
 let lightWorker: any;
 let maintenanceWorker: any;

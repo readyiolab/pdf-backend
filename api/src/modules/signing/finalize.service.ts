@@ -171,21 +171,23 @@ export const finalizeService = {
             'documentId = ?',
             [documentId]
           );
-          for (const r of recipients as any[]) {
-            const contactId = await upsertContact({
-              email: r.email,
-              name: r.name,
-              source: 'esign',
-            });
-            if (contactId) {
-              await recordCustomerEvent({
-                type: 'esign_completed',
-                userId: doc!.ownerId,
-                contactId,
-                meta: { documentId },
+          await Promise.all(
+            (recipients as any[]).map(async (r) => {
+              const contactId = await upsertContact({
+                email: r.email,
+                name: r.name,
+                source: 'esign',
               });
-            }
-          }
+              if (contactId) {
+                await recordCustomerEvent({
+                  type: 'esign_completed',
+                  userId: doc!.ownerId,
+                  contactId,
+                  meta: { documentId },
+                });
+              }
+            })
+          );
           await recordCustomerEvent({
             type: 'esign_completed',
             userId: doc!.ownerId,
