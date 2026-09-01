@@ -27,8 +27,8 @@ export const createDocumentSchema = z.object({
     fileName: z.string().min(1, 'fileName is required').max(255),
     title: z.string().min(1).max(SIGNING_LIMITS.maxTitleLength).optional(),
     // Advisory only — the client knows the page count after pdf.js parses the
-    // file. Re-derived authoritatively at finalization.
-    pageCount: z.number().int().positive().max(10000).optional(),
+    // file. Word uploads may send 0 while conversion runs; worker sets the real count.
+    pageCount: z.number().int().min(0).max(10000).optional(),
   }),
 });
 

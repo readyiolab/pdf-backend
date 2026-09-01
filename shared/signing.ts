@@ -242,16 +242,21 @@ export type SigningContentType = (typeof SIGNING_ALLOWED_CONTENT_TYPES)[number];
 /** True when the upload is a modern Word document (.docx). */
 export function isSigningOfficeUpload(contentType: string, fileName: string): boolean {
   if (!/\.docx$/i.test(fileName)) return false;
+  const normalized = contentType.toLowerCase().trim();
   return (
-    contentType === SIGNING_DOCX_MIME ||
-    contentType === 'application/octet-stream' ||
-    contentType === ''
+    normalized === SIGNING_DOCX_MIME ||
+    normalized === 'application/zip' ||
+    normalized === 'application/x-zip-compressed' ||
+    normalized === 'application/octet-stream' ||
+    normalized === ''
   );
 }
 
 /** True when contentType is one of the signing-allowed MIME types. */
-export function isSigningAllowedContentType(contentType: string): contentType is SigningContentType {
-  return (SIGNING_ALLOWED_CONTENT_TYPES as readonly string[]).includes(contentType);
+export function isSigningAllowedContentType(contentType: string, fileName?: string): boolean {
+  if ((SIGNING_ALLOWED_CONTENT_TYPES as readonly string[]).includes(contentType)) return true;
+  if (fileName && isSigningOfficeUpload(contentType, fileName)) return true;
+  return false;
 }
 
 /**

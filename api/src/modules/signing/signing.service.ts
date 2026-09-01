@@ -187,7 +187,7 @@ export const signingService = {
   async presignUpload(userId: string, input: PresignDocumentInput) {
     const { fileName, contentType, fileSize } = input;
 
-    if (!isSigningAllowedContentType(contentType)) {
+    if (!isSigningAllowedContentType(contentType, fileName)) {
       throw new AppError('Only PDF and Word (.docx) files can be sent for signature.', 400);
     }
     if (isSigningOfficeUpload(contentType, fileName) && !/\.docx$/i.test(fileName)) {
