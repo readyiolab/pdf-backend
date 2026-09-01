@@ -33,12 +33,16 @@ export const openAiProvider: AiProvider = {
     return Boolean(env.OPENAI_API_KEY);
   },
 
-  async complete(messages: AiMessage[], opts = {}) {
-    const res = await getClient().chat.completions.create({
-      model: env.AI_MODEL,
-      max_tokens: opts.maxTokens ?? 1024,
-      messages,
-    });
+  async complete(messages: AiMessage[], opts: { maxTokens?: number; jsonMode?: boolean; timeoutMs?: number } = {}) {
+    const res = await getClient().chat.completions.create(
+      {
+        model: env.AI_MODEL,
+        max_tokens: opts.maxTokens ?? 1024,
+        messages,
+        ...(opts.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+      },
+      { timeout: opts.timeoutMs ?? ((opts.maxTokens ?? 1024) > 2048 ? 120_000 : 60_000) }
+    );
 
     const choice = res.choices[0];
     // A content filter can leave content null; surface it as empty so the
@@ -68,12 +72,16 @@ export const openAiProvider: AiProvider = {
     }
   },
 
-  async completeVision(messages: VisionMessage[], opts = {}): Promise<AiCompletion> {
-    const res = await getClient().chat.completions.create({
-      model: opts.model || env.AI_MODEL,
-      max_tokens: opts.maxTokens ?? 2048,
-      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    });
+  async completeVision(messages: VisionMessage[], opts: { maxTokens?: number; model?: string; jsonMode?: boolean; timeoutMs?: number } = {}): Promise<AiCompletion> {
+    const res = await getClient().chat.completions.create(
+      {
+        model: opts.model || env.AI_MODEL,
+        max_tokens: opts.maxTokens ?? 2048,
+        messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+        ...(opts.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+      },
+      { timeout: opts.timeoutMs ?? 120_000 }
+    );
 
     const text = (res.choices[0]?.message?.content ?? '').trim();
     return {

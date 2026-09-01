@@ -9,6 +9,7 @@ import { AppError } from '../../middleware/errorHandler.middleware';
 import { detectFileCategory } from '../../../../shared/fileType';
 import { PLAN_LIMITS, AI_EXTRACT_QUEUE } from '../../../../shared/constants';
 import { getAiProvider, isAiConfigured, type AiMessage } from '../../lib/ai/provider';
+import { toAiAppError } from '../../lib/ai/errors';
 import type { ChatInput, ExplainInput, SummarizeInput } from './ai.types';
 import { asPlan, getStorageForUser, resolveUserStorageContext } from '../../lib/storage';
 import type { Plan } from '../../../../shared/types';
@@ -114,7 +115,7 @@ export const aiService = {
       await refundAiCredit(userId).catch(() => undefined);
       if (err instanceof AppError) throw err;
       logger.error({ err, userId }, 'AI provider call failed');
-      throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+      throw toAiAppError(err);
     }
   },
 

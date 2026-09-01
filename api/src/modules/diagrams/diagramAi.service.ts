@@ -6,6 +6,7 @@ import { PLAN_LIMITS } from '../../../../shared/constants';
 import { asPlan } from '../../lib/storage';
 import type { Plan } from '../../../../shared/types';
 import { getAiProvider, isAiConfigured } from '../../lib/ai/provider';
+import { toAiAppError } from '../../lib/ai/errors';
 import { parseModelJson } from '../letters/parseModelJson';
 import {
   diagramDocumentSchema,
@@ -16,8 +17,11 @@ import {
   type DiagramPatchOp,
 } from './diagrams.types';
 import { emptyDocument } from './diagrams.service';
+import crypto from 'crypto';
 
 const AI_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+const DIAGRAM_AI_OPTS = { maxTokens: 4096, jsonMode: true, timeoutMs: 120_000 } as const;
 
 const GENERATE_SYSTEM = `You are a diagram generation assistant for PDFPRODUCT.
 Return ONLY a single JSON object matching this DiagramDocument schema (no markdown, no commentary):
@@ -155,9 +159,71 @@ function applyPatches(page: DiagramPage, ops: DiagramPatchOp[]): DiagramPage {
   return { ...page, nodes, edges };
 }
 
+function normalizeAiDocument(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const doc = raw as Record<string, unknown>;
+  const pages = Array.isArray(doc.pages) ? doc.pages : [];
+  const settings =
+    doc.settings && typeof doc.settings === 'object'
+      ? { ...(doc.settings as Record<string, unknown>) }
+      : {};
+
+  const validThemes = new Set(['automatic', 'classic', 'simple', 'minimal', 'sketch', 'atlas']);
+  if (typeof settings.theme === 'string' && !validThemes.has(settings.theme)) {
+    settings.theme = 'automatic';
+  }
+
+  return {
+    version: doc.version === 1 ? 1 : 2,
+    pages: pages.map((page, index) => normalizeAiPage(page, index)),
+    settings,
+  };
+}
+
+function normalizeAiPage(raw: unknown, index: number) {
+  const page = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const nodes = Array.isArray(page.nodes) ? page.nodes : [];
+  const edges = Array.isArray(page.edges) ? page.edges : [];
+  return {
+    id: String(page.id || crypto.randomUUID()),
+    name: String(page.name || `Page-${index + 1}`),
+    nodes: nodes.map(normalizeAiNode),
+    edges: edges.map(normalizeAiEdge),
+  };
+}
+
+function normalizeAiNode(raw: unknown) {
+  const node = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const w = Number(node.w);
+  const h = Number(node.h);
+  return {
+    ...node,
+    id: String(node.id || crypto.randomUUID()),
+    label: String(node.label ?? ''),
+    shape: String(node.shape ?? 'rectangle'),
+    x: Number.isFinite(Number(node.x)) ? Number(node.x) : 40,
+    y: Number.isFinite(Number(node.y)) ? Number(node.y) : 40,
+    w: Number.isFinite(w) && w > 0 ? w : 120,
+    h: Number.isFinite(h) && h > 0 ? h : 60,
+    kind: node.kind ?? 'shape',
+  };
+}
+
+function normalizeAiEdge(raw: unknown) {
+  const edge = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  return {
+    ...edge,
+    id: String(edge.id || crypto.randomUUID()),
+    source: String(edge.source || ''),
+    target: String(edge.target || ''),
+    label: edge.label != null ? String(edge.label) : '',
+  };
+}
+
 function parseAndValidateDocument(raw: string): DiagramDocument {
   const parsed = parseModelJson(raw);
-  return diagramDocumentSchema.parse(parsed);
+  const normalized = normalizeAiDocument(parsed);
+  return diagramDocumentSchema.parse(normalized);
 }
 
 function parseAndValidatePatches(raw: string): DiagramPatchOp[] {
@@ -199,7 +265,7 @@ export const diagramAiService = {
             { role: 'system', content: GENERATE_SYSTEM },
             { role: 'user', content: prompt },
           ],
-          { maxTokens: 4096 }
+          DIAGRAM_AI_OPTS
         );
 
         let document: DiagramDocument;
@@ -211,7 +277,7 @@ export const diagramAiService = {
               { role: 'system', content: REPAIR_DOC_SYSTEM },
               { role: 'user', content: first.text },
             ],
-            { maxTokens: 4096 }
+            DIAGRAM_AI_OPTS
           );
           try {
             document = parseAndValidateDocument(repair.text);
@@ -228,7 +294,7 @@ export const diagramAiService = {
       } catch (err) {
         if (err instanceof AppError) throw err;
         logger.error({ err, userId }, 'Diagram AI generate failed');
-        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+        throw toAiAppError(err);
       }
     });
   },
@@ -250,7 +316,7 @@ export const diagramAiService = {
               content: `Instruction: ${instruction}\n\nCurrent page JSON:\n${JSON.stringify(validatedPage)}`,
             },
           ],
-          { maxTokens: 4096 }
+          DIAGRAM_AI_OPTS
         );
 
         let patch: DiagramPatchOp[];
@@ -262,7 +328,7 @@ export const diagramAiService = {
               { role: 'system', content: REPAIR_PATCH_SYSTEM },
               { role: 'user', content: first.text },
             ],
-            { maxTokens: 4096 }
+            DIAGRAM_AI_OPTS
           );
           try {
             patch = parseAndValidatePatches(repair.text);
@@ -280,7 +346,7 @@ export const diagramAiService = {
       } catch (err) {
         if (err instanceof AppError) throw err;
         logger.error({ err, userId }, 'Diagram AI edit failed');
-        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+        throw toAiAppError(err);
       }
     });
   },
@@ -319,7 +385,7 @@ export const diagramAiService = {
               ],
             },
           ],
-          { maxTokens: 4096 }
+          DIAGRAM_AI_OPTS
         );
 
         let document: DiagramDocument;
@@ -331,7 +397,7 @@ export const diagramAiService = {
               { role: 'system', content: REPAIR_DOC_SYSTEM },
               { role: 'user', content: first.text || JSON.stringify(emptyDocument()) },
             ],
-            { maxTokens: 4096 }
+            DIAGRAM_AI_OPTS
           );
           try {
             document = parseAndValidateDocument(repair.text);
@@ -348,7 +414,7 @@ export const diagramAiService = {
       } catch (err) {
         if (err instanceof AppError) throw err;
         logger.error({ err, userId }, 'Diagram AI fromImage failed');
-        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+        throw toAiAppError(err);
       }
     });
   },
@@ -375,7 +441,7 @@ Detect: broken/dangling edges, disconnected components, duplicates, missing retu
             },
             { role: 'user', content: JSON.stringify(validatedPage) },
           ],
-          { maxTokens: 2048 }
+          { maxTokens: 2048, jsonMode: true, timeoutMs: 60_000 }
         );
         let aiIssues: any[] = [];
         try {
@@ -414,7 +480,7 @@ Each step should reference real node ids from the page. No markdown.`,
             },
             { role: 'user', content: JSON.stringify(validatedPage) },
           ],
-          { maxTokens: 2048 }
+          { maxTokens: 2048, jsonMode: true, timeoutMs: 60_000 }
         );
         const parsed = parseModelJson(first.text) as {
           summary?: string;
@@ -430,7 +496,7 @@ Each step should reference real node ids from the page. No markdown.`,
       } catch (err) {
         if (err instanceof AppError) throw err;
         logger.error({ err, userId }, 'Diagram AI explain failed');
-        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+        throw toAiAppError(err);
       }
     });
   },
@@ -466,14 +532,14 @@ Each step should reference real node ids from the page. No markdown.`,
               content: JSON.stringify({ nodes, edges, fullPage: validatedPage }),
             },
           ],
-          { maxTokens: 1024 }
+          { maxTokens: 1024, jsonMode: true, timeoutMs: 60_000 }
         );
         const parsed = parseModelJson(first.text) as { explanation?: string };
         return { explanation: String(parsed.explanation || first.text) };
       } catch (err) {
         if (err instanceof AppError) throw err;
         logger.error({ err, userId }, 'Diagram AI explainSelection failed');
-        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+        throw toAiAppError(err);
       }
     });
   },
@@ -509,14 +575,14 @@ Each step should reference real node ids from the page. No markdown.`,
               }),
             },
           ],
-          { maxTokens: 1024 }
+          { maxTokens: 1024, jsonMode: true, timeoutMs: 60_000 }
         );
         const parsed = parseModelJson(first.text) as { summary?: string };
         return { summary: String(parsed.summary || first.text) };
       } catch (err) {
         if (err instanceof AppError) throw err;
         logger.error({ err, userId }, 'Diagram AI diffSummary failed');
-        throw new AppError('The AI service is temporarily unavailable. Please try again.', 503);
+        throw toAiAppError(err);
       }
     });
   },

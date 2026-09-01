@@ -41,12 +41,15 @@ export interface AiCompletion {
 export interface AiProvider {
   readonly name: string;
   isConfigured(): boolean;
-  complete(messages: AiMessage[], opts?: { maxTokens?: number }): Promise<AiCompletion>;
+  complete(
+    messages: AiMessage[],
+    opts?: { maxTokens?: number; jsonMode?: boolean; timeoutMs?: number }
+  ): Promise<AiCompletion>;
   /** Streams the answer as text deltas; the final delta may be empty. */
   streamText(messages: AiMessage[], opts?: { maxTokens?: number }): AsyncIterable<string>;
   completeVision?(
     messages: VisionMessage[],
-    opts?: { maxTokens?: number; model?: string }
+    opts?: { maxTokens?: number; model?: string; jsonMode?: boolean; timeoutMs?: number }
   ): Promise<AiCompletion>;
 }
 
