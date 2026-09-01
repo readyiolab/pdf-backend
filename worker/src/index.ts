@@ -9,6 +9,7 @@ import {
   startAiExtractWorker,
   stopAuxWorkers,
 } from './queue/auxWorkers';
+import { startSignConvertWorker } from './queue/signConvert.worker';
 import { redis } from './lib/redis';
 import { createMysqlPool, db } from './lib/mysql';
 import { startWorkerStorageCacheSubscriber } from './storage/s3';
@@ -29,6 +30,7 @@ let lightWorker: any;
 let maintenanceWorker: any;
 let letterZipWorker: any;
 let aiExtractWorker: any;
+let signConvertWorker: any;
 let server: any;
 
 // Spin up a minimal Express server for container/health checks
@@ -91,6 +93,11 @@ const gracefulShutdown = async () => {
   await stopAuxWorkers();
   logger.info('Aux workers closed.');
 
+  if (signConvertWorker) {
+    await signConvertWorker.close();
+    logger.info('Sign-convert worker closed.');
+  }
+
   // Disconnect Redis
   await redis.quit();
   logger.info('Redis connection closed.');
@@ -123,6 +130,7 @@ async function bootstrap() {
     maintenanceWorker = await startMaintenanceWorker();
     letterZipWorker = startLetterZipWorker();
     aiExtractWorker = startAiExtractWorker();
+    signConvertWorker = startSignConvertWorker();
 
     // 3. Start health check listener
     server = app.listen(env.PORT, () => {

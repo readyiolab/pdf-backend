@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/api/src/index.js",
-    "test": "tsx --test src/lib/storage/endpointGuard.test.ts src/lib/storage/bindingResolution.test.ts src/lib/secretBox.test.ts src/modules/admin/admin.redaction.test.ts src/lib/storage/byoc.integration.test.ts src/modules/letters/letter.hardening.test.ts src/lib/database.orderby.test.ts src/modules/letters/letterAi.parseJson.test.ts"
+    "test": "tsx --test src/lib/storage/endpointGuard.test.ts src/lib/storage/bindingResolution.test.ts src/lib/secretBox.test.ts src/modules/admin/admin.redaction.test.ts src/lib/storage/byoc.integration.test.ts src/modules/letters/letter.hardening.test.ts src/lib/database.orderby.test.ts src/modules/letters/letterAi.parseJson.test.ts ../shared/signing.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.500.0",

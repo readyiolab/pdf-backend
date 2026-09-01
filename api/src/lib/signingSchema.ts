@@ -194,6 +194,8 @@ export async function initializeSigningSchema(conn: PoolConnection): Promise<voi
   await ensureColumn(conn, 'tbl_sign_recipient', 'otpVerifiedAt', 'DATETIME(3) NULL AFTER otpAttempts');
   await ensureColumn(conn, 'tbl_sign_recipient', 'ipAddress', 'VARCHAR(64) NULL AFTER otpVerifiedAt');
   await ensureColumn(conn, 'tbl_sign_recipient', 'deviceInfo', 'VARCHAR(512) NULL AFTER ipAddress');
+  await ensureColumn(conn, 'tbl_sign_document', 'sourceFileKey', 'VARCHAR(512) NULL AFTER originalHash');
+  await ensureColumn(conn, 'tbl_sign_document', 'sourceFileName', 'VARCHAR(255) NULL AFTER sourceFileKey');
 
   // Query-path indexes (idempotent — safe on existing databases too).
   await ensureIndex(conn, 'tbl_sign_document', 'idx_sign_doc_owner_status', 'ownerId, status');

@@ -7,6 +7,8 @@ export const MAINTENANCE_QUEUE = 'maintenance';
 export const DEAD_JOBS_QUEUE = 'dead-jobs';
 /** Dedicated queue for sealing signed PDFs (stamp + cert + PKCS#7). */
 export const SIGN_FINALIZE_QUEUE = 'sign-finalize';
+/** Converts Word uploads to PDF for the signing module. */
+export const SIGN_CONVERT_QUEUE = 'sign-convert';
 
 // Allowed input file categories per tool. Used to reject files whose real bytes
 // don't match what the tool can process (defense against malicious uploads).

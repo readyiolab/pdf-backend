@@ -8,6 +8,8 @@
 
 /** Lifecycle of a signing document. */
 export type SignDocumentStatus =
+  | 'CONVERTING' // Word upload being converted to PDF by the worker
+  | 'CONVERSION_FAILED' // LibreOffice conversion failed; owner may delete and retry
   | 'DRAFT' // being prepared by the owner; not yet sent
   | 'SENT' // out for signature, at least one recipient pending
   | 'FINALIZING' // all signers done; worker is sealing the PDF
@@ -106,7 +108,9 @@ export type SignAuditAction =
   | 'DOCUMENT_COMPLETED'
   | 'DOCUMENT_VOIDED'
   | 'DOCUMENT_EXPIRED'
-  | 'DOCUMENT_DOWNLOADED';
+  | 'DOCUMENT_DOWNLOADED'
+  | 'DOCUMENT_CONVERTED'
+  | 'CONVERSION_FAILED';
 
 /**
  * Field geometry is stored as page-relative fractions (0..1) of the page's
@@ -204,15 +208,19 @@ export interface SignDocumentDTO {
   message: string | null;
   status: SignDocumentStatus;
   flowType: SignFlowType;
-  fileKey: string; // S3 key of the ORIGINAL upload — never overwritten
+  fileKey: string; // S3 key of the signing PDF (converted from Word when applicable)
   /** BYOC binding that wrote fileKey; null = platform Spaces */
   storageBindingId?: string | null;
   fileName: string;
   fileSize: number;
   pageCount: number;
   currentVersion: number;
-  /** SHA-256 of the original upload, taken before any modification. */
+  /** SHA-256 of the PDF signers see, taken before any modification. */
   originalHash: string | null;
+  /** Original .docx upload key; null for PDF-only uploads. */
+  sourceFileKey?: string | null;
+  /** Original .docx filename when sourceFileKey is set. */
+  sourceFileName?: string | null;
   expiresAt: string | null;
   sentAt: string | null;
   completedAt: string | null;
@@ -220,6 +228,30 @@ export interface SignDocumentDTO {
   updatedAt: string;
   recipients?: SignRecipientDTO[];
   fields?: SignFieldDTO[];
+}
+
+/** MIME types accepted for signing uploads. */
+export const SIGNING_PDF_MIME = 'application/pdf' as const;
+export const SIGNING_DOCX_MIME =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document' as const;
+
+export const SIGNING_ALLOWED_CONTENT_TYPES = [SIGNING_PDF_MIME, SIGNING_DOCX_MIME] as const;
+
+export type SigningContentType = (typeof SIGNING_ALLOWED_CONTENT_TYPES)[number];
+
+/** True when the upload is a modern Word document (.docx). */
+export function isSigningOfficeUpload(contentType: string, fileName: string): boolean {
+  if (!/\.docx$/i.test(fileName)) return false;
+  return (
+    contentType === SIGNING_DOCX_MIME ||
+    contentType === 'application/octet-stream' ||
+    contentType === ''
+  );
+}
+
+/** True when contentType is one of the signing-allowed MIME types. */
+export function isSigningAllowedContentType(contentType: string): contentType is SigningContentType {
+  return (SIGNING_ALLOWED_CONTENT_TYPES as readonly string[]).includes(contentType);
 }
 
 /**

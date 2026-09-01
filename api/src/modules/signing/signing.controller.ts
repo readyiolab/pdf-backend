@@ -255,6 +255,14 @@ export const signingController = {
     }
   },
 
+  async getSourceDownloadUrl(req: Request, res: Response, next: NextFunction) {
+    try {
+      res.status(200).json(await signingService.getSourceDownloadUrl(req.params.id, req.user.id));
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async getAudit(req: Request, res: Response, next: NextFunction) {
     try {
       await signingService.assertOwnership(req.params.id, req.user.id);

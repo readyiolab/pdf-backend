@@ -66,6 +66,7 @@ router.get('/:id/status', validate(documentIdSchema), signingController.getStatu
 
 // --- Output ---
 router.get('/:id/download', validate(documentVersionSchema), signingController.getDownloadUrl);
+router.get('/:id/download-source', validate(documentIdSchema), signingController.getSourceDownloadUrl);
 router.get('/:id/certificate', validate(documentIdSchema), signingController.getCertificateUrl);
 
 // --- Audit ---

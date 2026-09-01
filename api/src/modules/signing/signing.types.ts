@@ -35,7 +35,7 @@ export const createDocumentSchema = z.object({
 export const listDocumentsSchema = z.object({
   query: z.object({
     status: z
-      .enum(['DRAFT', 'SENT', 'FINALIZING', 'COMPLETED', 'DECLINED', 'EXPIRED', 'VOIDED'])
+      .enum(['CONVERTING', 'CONVERSION_FAILED', 'DRAFT', 'SENT', 'FINALIZING', 'COMPLETED', 'DECLINED', 'EXPIRED', 'VOIDED'])
       .optional(),
     search: z.string().max(200).optional(),
     page: z.coerce.number().int().positive().default(1),

@@ -14,9 +14,12 @@ import { AppError } from '../../middleware/errorHandler.middleware';
 import { detectFileCategory } from '../../../../shared/fileType';
 import { PLAN_LIMITS } from '../../../../shared/constants';
 import { getStorageForUser } from '../../lib/storage';
+import { enqueueSignConvert } from '../../lib/queue';
 import {
   RECIPIENT_COLORS,
   SIGNING_LIMITS,
+  isSigningAllowedContentType,
+  isSigningOfficeUpload,
   type SignDocumentDTO,
   type SignFieldDTO,
   type SignRecipientDTO,
@@ -51,6 +54,33 @@ function documentKey(
     return `org-${organizationId}/signing/doc-${documentId}/original_${sanitized}`;
   }
   return `${SIGNING_PREFIX}/user-${userId}/doc-${documentId}/original_${sanitized}`;
+}
+
+function sourceDocumentKey(
+  userId: string,
+  documentId: string,
+  fileName: string,
+  organizationId: string | null
+): string {
+  const sanitized = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  if (organizationId) {
+    return `org-${organizationId}/signing/doc-${documentId}/source_${sanitized}`;
+  }
+  return `${SIGNING_PREFIX}/user-${userId}/doc-${documentId}/source_${sanitized}`;
+}
+
+function convertedDocumentKey(
+  userId: string,
+  documentId: string,
+  fileName: string,
+  organizationId: string | null
+): string {
+  const baseName = fileName.replace(/\.docx$/i, '.pdf');
+  const sanitized = baseName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  if (organizationId) {
+    return `org-${organizationId}/signing/doc-${documentId}/converted_${sanitized}`;
+  }
+  return `${SIGNING_PREFIX}/user-${userId}/doc-${documentId}/converted_${sanitized}`;
 }
 
 function isOwnedSigningKey(
@@ -157,8 +187,11 @@ export const signingService = {
   async presignUpload(userId: string, input: PresignDocumentInput) {
     const { fileName, contentType, fileSize } = input;
 
-    if (contentType !== 'application/pdf') {
-      throw new AppError('Only PDF files can be sent for signature.', 400);
+    if (!isSigningAllowedContentType(contentType)) {
+      throw new AppError('Only PDF and Word (.docx) files can be sent for signature.', 400);
+    }
+    if (isSigningOfficeUpload(contentType, fileName) && !/\.docx$/i.test(fileName)) {
+      throw new AppError('Only .docx Word files are supported. Save legacy .doc files as .docx first.', 400);
     }
     if (fileSize > SIGNING_LIMITS.maxFileSize) {
       const maxMb = Math.floor(SIGNING_LIMITS.maxFileSize / (1024 * 1024));
@@ -169,7 +202,9 @@ export const signingService = {
     // doc-scoped folder, rather than being moved after the row is created.
     const documentId = crypto.randomUUID();
     const { storage, organizationId } = await getStorageForUser(userId);
-    const fileKey = documentKey(userId, documentId, fileName, organizationId);
+    const fileKey = isSigningOfficeUpload(contentType, fileName)
+      ? sourceDocumentKey(userId, documentId, fileName, organizationId)
+      : documentKey(userId, documentId, fileName, organizationId);
     const uploadUrl = await storage.presignPut(fileKey, contentType, env.PRESIGN_TTL_SECONDS);
 
     return { documentId, uploadUrl, fileKey };
@@ -214,9 +249,64 @@ export const signingService = {
       throw new AppError(`File size exceeds the ${maxMb}MB limit for signing documents.`, 400);
     }
 
-    if (detectFileCategory(head) !== 'pdf') {
+    const category = detectFileCategory(head);
+    const documentId = fileKey.match(/\/doc-([0-9a-f-]{36})\//)?.[1] ?? crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + SIGNING_LIMITS.defaultExpiryDays * 86400_000);
+
+    if (category === 'office') {
+      if (!/\.docx$/i.test(fileName)) {
+        await deleteObject(fileKey, storageBindingId);
+        throw new AppError('Only .docx Word files are supported for signing.', 400);
+      }
+      if (!fileKey.includes('/source_')) {
+        await deleteObject(fileKey, storageBindingId);
+        throw new AppError('Invalid file key for Word upload.', 400);
+      }
+
+      const docTitle = (title || fileName.replace(/\.docx$/i, '')).slice(0, SIGNING_LIMITS.maxTitleLength);
+      const pdfKey = convertedDocumentKey(userId, documentId, fileName, organizationId);
+      const pdfFileName = fileName.replace(/\.docx$/i, '.pdf');
+
+      const conn = await db.beginTransaction();
+      try {
+        await conn.query(
+          `INSERT INTO tbl_sign_document
+             (id, ownerId, title, status, fileKey, storageBindingId, fileName, fileSize, pageCount,
+              currentVersion, originalHash, sourceFileKey, sourceFileName, expiresAt)
+           VALUES (?, ?, ?, 'CONVERTING', ?, ?, ?, ?, 0, 1, NULL, ?, ?, ?)`,
+          [
+            documentId,
+            userId,
+            docTitle,
+            pdfKey,
+            storageBindingId,
+            pdfFileName,
+            0,
+            fileKey,
+            fileName,
+            expiresAt,
+          ]
+        );
+
+        await conn.query(
+          `INSERT INTO tbl_sign_document_version (id, documentId, version, fileKey, storageBindingId, fileSize, sha256, label)
+           VALUES (?, ?, 1, ?, ?, 0, NULL, 'Converting')`,
+          [crypto.randomUUID(), documentId, pdfKey, storageBindingId]
+        );
+
+        await db.commit(conn);
+      } catch (err) {
+        await db.rollback(conn);
+        throw err;
+      }
+
+      await enqueueSignConvert(documentId, fileKey, storageBindingId);
+      return this.getDocument(documentId, userId);
+    }
+
+    if (category !== 'pdf') {
       await deleteObject(fileKey, storageBindingId);
-      throw new AppError('Only PDF files can be sent for signature.', 400);
+      throw new AppError('Only PDF and Word (.docx) files can be sent for signature.', 400);
     }
 
     // Hash the original BEFORE it is registered, let alone signed. This is the
@@ -225,10 +315,6 @@ export const signingService = {
     // after any tool has touched the file — would prove nothing.
     const originalHash = await hashObject(fileKey, storageBindingId);
 
-    // Recover the id embedded in the key at presign time so the row and the
-    // object folder agree.
-    const documentId = fileKey.match(/\/doc-([0-9a-f-]{36})\//)?.[1] ?? crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + SIGNING_LIMITS.defaultExpiryDays * 86400_000);
     const docTitle = (title || fileName.replace(/\.pdf$/i, '')).slice(0, SIGNING_LIMITS.maxTitleLength);
 
     const conn = await db.beginTransaction();
@@ -359,6 +445,8 @@ export const signingService = {
     ]);
 
     const byStatus: Record<string, number> = {
+      CONVERTING: 0,
+      CONVERSION_FAILED: 0,
       DRAFT: 0, SENT: 0, FINALIZING: 0, COMPLETED: 0, DECLINED: 0, EXPIRED: 0, VOIDED: 0,
     };
     for (const r of rows) byStatus[r.status] = Number(r.count);
@@ -425,6 +513,13 @@ export const signingService = {
   /** Short-lived signed URL the viewer uses to fetch the PDF bytes. */
   async getViewUrl(documentId: string, userId: string, version?: number) {
     const doc = await loadOwnedDocument(documentId, userId);
+
+    if (doc.status === 'CONVERTING') {
+      throw new AppError('This document is still being converted from Word to PDF. Please wait.', 409);
+    }
+    if (doc.status === 'CONVERSION_FAILED') {
+      throw new AppError('Word conversion failed. Delete this document and try uploading again.', 409);
+    }
 
     let key = doc.fileKey;
     if (version) {
@@ -496,10 +591,12 @@ export const signingService = {
     // first and the DB delete failed, the document would still be listed but
     // its bytes would be gone — a far worse state to be in.
     await db.delete('tbl_sign_document', 'id = ?', [documentId]);
-    await deleteObjects(
-      [doc.fileKey, ...versions.map((v: any) => v.fileKey)],
-      doc.storageBindingId ?? null
-    );
+    const keysToDelete = [
+      doc.fileKey,
+      ...versions.map((v: any) => v.fileKey),
+      ...(doc.sourceFileKey ? [doc.sourceFileKey] : []),
+    ];
+    await deleteObjects(keysToDelete, doc.storageBindingId ?? null);
 
     return { id: documentId, deleted: true };
   },
@@ -766,6 +863,7 @@ export const signingService = {
       completedAt: doc.completedAt,
       expiresAt: doc.expiresAt,
       originalHash: doc.originalHash,
+      sourceFileName: doc.sourceFileName ?? null,
       currentVersion: doc.currentVersion,
       progress: {
         signed: completed.length,
@@ -827,6 +925,19 @@ export const signingService = {
 
     const name = `${doc.title.replace(/[^a-zA-Z0-9 _-]/g, '')} (certificate).pdf`;
     return { url: await getSignedDownloadUrl(row.certificateKey, name, undefined, doc.storageBindingId ?? null) };
+  },
+
+  /** Signed download URL for the original Word (.docx) upload, when present. */
+  async getSourceDownloadUrl(documentId: string, userId: string) {
+    const doc = await loadOwnedDocument(documentId, userId);
+    if (!doc.sourceFileKey) {
+      throw new AppError('This document has no original Word file.', 404);
+    }
+
+    const name = doc.sourceFileName || 'original.docx';
+    return {
+      url: await getSignedDownloadUrl(doc.sourceFileKey, name, undefined, doc.storageBindingId ?? null),
+    };
   },
 
   /** Ownership gate for the audit endpoint. */

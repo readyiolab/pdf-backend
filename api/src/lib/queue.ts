@@ -7,6 +7,7 @@ import {
   DEAD_JOBS_QUEUE,
   HEAVY_TOOLS,
   SIGN_FINALIZE_QUEUE,
+  SIGN_CONVERT_QUEUE,
 } from '../../../shared/constants';
 import { ToolName, JobPayload } from '../../../shared/types';
 import { logger } from './logger';
@@ -61,6 +62,37 @@ export async function enqueueSignFinalize(documentId: string): Promise<void> {
     { documentId },
     {
       jobId: `finalize-${documentId}`,
+    }
+  );
+}
+
+export interface SignConvertPayload {
+  documentId: string;
+  sourceFileKey: string;
+  storageBindingId: string | null;
+}
+
+export const signConvertQueue = new Queue<SignConvertPayload>(SIGN_CONVERT_QUEUE, {
+  connection: redis as any,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: true,
+    removeOnFail: { age: 24 * 3600, count: 500 },
+  },
+});
+
+export async function enqueueSignConvert(
+  documentId: string,
+  sourceFileKey: string,
+  storageBindingId: string | null
+): Promise<void> {
+  logger.info({ documentId, sourceFileKey }, 'Enqueueing sign-convert job');
+  await signConvertQueue.add(
+    'convert',
+    { documentId, sourceFileKey, storageBindingId },
+    {
+      jobId: `convert-${documentId}`,
     }
   );
 }
